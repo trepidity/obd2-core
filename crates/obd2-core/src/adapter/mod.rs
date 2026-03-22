@@ -1,0 +1,1 @@
+//! Adapter trait and implementations.

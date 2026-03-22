@@ -1,0 +1,2389 @@
+# ==============================================================================
+# MASTER SPECIFICATION: 2004.5 GM DURAMAX (LLY) & ALLISON 1000 (5-SPEED)
+# Architecture: Bosch E60 ECM | Allison Gen 3/4 TCM | J1850 VPW Protocol
+#
+# Scope: Every queryable PID, DTC, service, and module accessible via the
+#         OBD-II DLC on J1850 VPW for this platform.
+#
+# Conventions:
+#   - "pid" values are the 2-byte identifier sent AFTER the service byte
+#     (e.g. for Mode 22, send: 22 [pid_hi] [pid_lo])
+#   - "formula" uses A = first data byte, B = second, etc.
+#   - "signed_int(A,B)" means (A*256+B) interpreted as signed 16-bit
+#   - "bytes" = expected data byte count in the positive response
+#   - "range" = normal operating envelope for a healthy LLY
+#   - Headers shown are J1850 VPW 3-byte format: Priority | Target | Source
+#
+# Data Confidence:
+#   Each section is tagged with a confidence level and source references.
+#   See spec_sources.yaml for full source details.
+#     verified    = confirmed against manufacturer documentation or standards
+#     community   = multiple independent confirmations from diagnostic community
+#     inferred    = extrapolated from related platform data, needs on-vehicle verification
+#     unverified  = provisional data, MUST be verified before relying on it
+#
+# IMPORTANT: Enhanced Mode 22 PIDs (sections 8-9) are manufacturer-specific
+# and vary by ECM calibration. PIDs marked "inferred" or "unverified" MUST
+# be tested on an actual vehicle before trusting the addresses or formulas.
+# ==============================================================================
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. SYSTEM IDENTITY & HARDWARE GATE
+# ──────────────────────────────────────────────────────────────────────────────
+
+system_identity:
+  platform: "GMT800 (Silverado / Sierra 2500HD / 3500)"
+  model_years: "2004.5 – 2005 (LLY production run)"
+  engine:
+    code: "LLY"
+    displacement: "6.6L (6599 cc)"
+    configuration: "V8, 90° bank angle"
+    aspiration: "Variable Geometry Turbo (Garrett GT3788VA)"
+    fuel_system: "Bosch common-rail direct injection, 23,200 PSI max rail pressure"
+    compression_ratio: "17.5:1"
+    max_power_kw: 224        # 300 HP @ 3100 RPM
+    max_torque_nm: 895       # 520 lb-ft @ 1800 RPM
+    redline_rpm: 3250
+    idle_rpm_warm: 680
+    idle_rpm_cold: 780
+    firing_order: "1-2-7-8-4-5-6-3"
+    cylinder_bank_left: [1, 2, 3, 4]     # Driver side
+    cylinder_bank_right: [5, 6, 7, 8]    # Passenger side
+  ecm:
+    hardware: "Bosch E60"
+    processor: "MPC555"
+  ficm:
+    name: "Fuel Injection Control Module (EDU)"
+    function: "Converts 12V to 48V for piezo-style injector firing"
+  transmission:
+    model: "Allison 1000 (5-speed automatic)"
+    generation: "Gen 3 / Gen 4 (MY2004 overlap)"
+    gear_ratios:
+      first: 3.10
+      second: 1.81
+      third: 1.41
+      fourth: 1.00
+      fifth: 0.71
+      reverse: 4.49
+    torque_converter: "Single-stage, lockup clutch (TCC)"
+    fluid_capacity_liters: 13.5
+    max_input_torque_nm: 949
+
+  critical_hardware_gate:
+    description: "MUST verify the 8th VIN digit before applying this spec"
+    engine_types_2004:
+      - type: "LB7 (Early 2004)"
+        vin_8th_digit: "1"
+        ecm_hardware: "Bosch E54"
+        note: "DO NOT use this spec for LB7 — different ECM, different PIDs"
+      - type: "LLY (Late 2004 / 2004.5)"
+        vin_8th_digit: "2"
+        ecm_hardware: "Bosch E60"
+        note: "Primary target for this specification"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. COMMUNICATION PROTOCOL & BUS TOPOLOGY
+# ──────────────────────────────────────────────────────────────────────────────
+
+communication_protocol:
+  confidence: verified
+  sources: [SAE-J1850, SAE-J1962, LLY-PROTOCOL-DIESELPLACE, NXP-AN1731]
+  interface: "SAE J1850 VPW (Variable Pulse Width)"
+  standard: "GM Class 2 Serial Data"
+  bus_speed: "10.4 kbps"
+  voltage_levels:
+    high: "7.75V (dominant)"
+    low: "3.25V (passive)"
+  message_format:
+    byte_order: "MSB first"
+    max_message_bytes: 12      # 3 header + 8 data + 1 CRC
+    crc: "CRC-8 (SAE J1850)"
+  timing:
+    p2_max_ms: 50              # max time between request and first response byte
+    p3_min_ms: 55              # min time between end of response and next request
+    inter_byte_max_ms: 20      # max gap between bytes in a message
+  multi_frame:
+    note: "J1850 VPW does not use ISO-TP flow control. Multi-frame responses arrive as separate messages with sequence bytes."
+
+  dlc_pinout:
+    pin_2: "J1850 VPW Data Line (+)"
+    pin_4: "Chassis Ground"
+    pin_5: "Signal Ground"
+    pin_16: "Battery Positive (+12V)"
+    pins_unused: [1, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. MODULE ADDRESSES (All nodes accessible via OBD-II DLC on J1850 VPW)
+# ──────────────────────────────────────────────────────────────────────────────
+
+module_addresses:
+  confidence: community
+  sources: [GM-ACDELCO-TDS, DMAX-BALANCE-RATES-TORQUEBHP, ALLISON-TCM-GMTNATION]
+  source_note: "ECM (0x10), TCM (0x18), and functional (0x6A) addresses are well-established. Other module addresses (BCM, IPC, SIR, HVAC) are typical GM Class 2 assignments but may vary by configuration."
+  # Node address is the second byte in the 3-byte J1850 header
+  ecm:
+    node: "0x10"
+    description: "Engine Control Module (Bosch E60)"
+    header_physical: "6C 10 F1"       # priority=6C, target=ECM, source=tool
+  tcm:
+    node: "0x18"
+    description: "Transmission Control Module (Allison 1000)"
+    header_physical: "6C 18 F1"
+  bcm:
+    node: "0x40"
+    description: "Body Control Module"
+    header_physical: "6C 40 F1"
+  ipc:
+    node: "0x20"
+    description: "Instrument Panel Cluster"
+    header_physical: "6C 20 F1"
+  abs_ebcm:
+    node: "0x28"
+    description: "ABS / Electronic Brake Control Module"
+    header_physical: "6C 28 F1"
+  sir:
+    node: "0x58"
+    description: "Supplemental Inflatable Restraint (Airbag)"
+    header_physical: "6C 58 F1"
+  hvac:
+    node: "0x60"
+    description: "HVAC Control Module (if auto climate)"
+    header_physical: "6C 60 F1"
+  ficm:
+    node: "0x11"
+    description: "Fuel Injection Control Module (EDU)"
+    header_physical: "6C 11 F1"
+    note: "Not all FICMs respond to OBD queries — verify with Mode $01 PID $00"
+  tbc:
+    node: "0x68"
+    description: "Trailer Brake Controller (if equipped)"
+    header_physical: "6C 68 F1"
+  vcm:
+    node: "0x44"
+    description: "Vehicle Communications Module (OnStar, if equipped)"
+    header_physical: "6C 44 F1"
+  functional_broadcast:
+    node: "0x6A"
+    description: "Functional (broadcast) address — all OBD-compliant modules respond"
+    header_functional: "68 6A F1"
+  tool_id: "0xF1"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. ELM327 INITIALIZATION SEQUENCE
+# ──────────────────────────────────────────────────────────────────────────────
+
+elm327_init:
+  description: "AT commands to configure ELM327 for J1850 VPW communication"
+  sequence:
+    - { cmd: "ATZ",         purpose: "Reset adapter" }
+    - { cmd: "ATE0",        purpose: "Echo off" }
+    - { cmd: "ATL0",        purpose: "Linefeeds off" }
+    - { cmd: "ATS0",        purpose: "Spaces off (optional, saves bandwidth)" }
+    - { cmd: "ATH1",        purpose: "Headers ON (required to identify responding module)" }
+    - { cmd: "ATSP2",       purpose: "Set protocol to SAE J1850 VPW (protocol 2)" }
+    - { cmd: "ATAT1",       purpose: "Adaptive timing on (auto-adjust response wait)" }
+    - { cmd: "ATST 96",     purpose: "Set timeout to 150 * 4ms = 600ms (generous for slow modules)" }
+  header_switching:
+    standard_obd:  { cmd: "AT SH 68 6A F1", purpose: "Functional broadcast for Mode 01/03/04/07/09" }
+    ecm_enhanced:  { cmd: "AT SH 6C 10 F1", purpose: "Physical addressing for ECM Mode 22" }
+    tcm_enhanced:  { cmd: "AT SH 6C 18 F1", purpose: "Physical addressing for TCM Mode 22" }
+    bcm_enhanced:  { cmd: "AT SH 6C 40 F1", purpose: "Physical addressing for BCM Mode 22" }
+    abs_enhanced:  { cmd: "AT SH 6C 28 F1", purpose: "Physical addressing for ABS Mode 22" }
+    ficm_enhanced: { cmd: "AT SH 6C 11 F1", purpose: "Physical addressing for FICM Mode 22" }
+  notes:
+    - "After AT SH, send the service + PID bytes only (e.g. '22 11 9B')"
+    - "Always switch back to 'AT SH 68 6A F1' before standard OBD queries"
+    - "Use 'AT MA' to monitor all bus traffic (passive listen mode)"
+    - "Use 'AT MR xx' to monitor messages from a specific node"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. DIAGNOSTIC SERVICES (OBD-II + GM-Specific)
+# ──────────────────────────────────────────────────────────────────────────────
+
+diagnostic_services:
+  confidence: verified
+  sources: [SAE-J1979, SAE-J2190, SAE-J2012, ISO-14229]
+  source_note: "Standard services (Mode 01-0A) defined by SAE J1979. Enhanced services (Mode 10/14/19/22/27/2F/3E) defined by SAE J2190. NRC codes from ISO 14229."
+  # --- Standard OBD-II Services ---
+  mode_01:
+    service_id: "0x01"
+    name: "Request Current Powertrain Diagnostic Data"
+    request_format: "01 [PID]"
+    response_format: "41 [PID] [A] [B] [C] [D]"
+    header: "68 6A F1"
+    note: "Functional broadcast — ECM responds on behalf of powertrain"
+
+  mode_02:
+    service_id: "0x02"
+    name: "Request Freeze Frame Data"
+    request_format: "02 [PID] [Frame#]"
+    response_format: "42 [PID] [Frame#] [A] [B] [C] [D]"
+    header: "68 6A F1"
+    note: "Same PIDs as Mode 01 but captured at time of DTC set. Frame# usually 0x00."
+
+  mode_03:
+    service_id: "0x03"
+    name: "Request Stored DTCs"
+    request_format: "03"
+    response_format: "43 [count] [DTC1_hi] [DTC1_lo] [DTC2_hi] [DTC2_lo] ..."
+    header: "68 6A F1"
+    note: "Returns all confirmed/stored DTCs. Decode 2 bytes per DTC."
+    ecm_direct:
+      header: "6C 10 F1"
+      request: "03"
+      note: "Query ECM directly for engine DTCs only"
+    tcm_direct:
+      header: "6C 18 F1"
+      request: "03"
+      note: "Query TCM directly — essential for true transmission DTCs (bypass P0700)"
+
+  mode_04:
+    service_id: "0x04"
+    name: "Clear DTCs and Reset Monitors"
+    request_format: "04"
+    response_format: "44"
+    header: "68 6A F1"
+    warning: "Clears ALL DTCs and resets ALL readiness monitors. MIL turns off."
+    ecm_only:
+      header: "6C 10 F1"
+      request: "04"
+      note: "Clear ECM DTCs only"
+    tcm_only:
+      header: "6C 18 F1"
+      request: "04"
+      note: "Clear TCM DTCs only"
+
+  mode_05:
+    service_id: "0x05"
+    name: "Oxygen Sensor Monitoring Test Results"
+    note: "NOT SUPPORTED on diesel — no O2 sensors. Query will return no data or 7F 05."
+
+  mode_06:
+    service_id: "0x06"
+    name: "On-Board Monitoring Test Results"
+    request_format: "06 [TID]"
+    response_format: "46 [TID] [COMP_ID] [test_val_hi] [test_val_lo] [min_hi] [min_lo] [max_hi] [max_lo]"
+    header: "68 6A F1"
+    note: "Continuous and non-continuous monitoring results. TID 0x00 = supported TIDs."
+    test_ids:
+      - { tid: "0x00", name: "Supported TIDs bitmap" }
+      - { tid: "0x01", name: "Catalyst monitoring (N/A diesel)" }
+      - { tid: "0x05", name: "EGR system monitoring" }
+      - { tid: "0x06", name: "Intake air heater monitoring" }
+      - { tid: "0x07", name: "Exhaust gas sensor heater monitoring (N/A)" }
+      - { tid: "0x08", name: "Boost pressure control monitoring" }
+      - { tid: "0x09", name: "Fuel system monitoring" }
+      - { tid: "0x0B", name: "Misfire monitoring" }
+
+  mode_07:
+    service_id: "0x07"
+    name: "Request Pending DTCs (current drive cycle)"
+    request_format: "07"
+    response_format: "47 [count] [DTC1_hi] [DTC1_lo] ..."
+    header: "68 6A F1"
+    note: "DTCs detected this drive cycle but not yet confirmed (1-trip vs 2-trip)"
+
+  mode_08:
+    service_id: "0x08"
+    name: "Control On-Board System Test"
+    note: "Limited support on LLY. Primarily used for EVAP leak test (N/A on diesel)."
+
+  mode_09:
+    service_id: "0x09"
+    name: "Request Vehicle Information"
+    header: "68 6A F1"
+    infotypes:
+      - { iid: "0x00", name: "Supported InfoTypes bitmap", request: "09 00", bytes: 4 }
+      - { iid: "0x01", name: "VIN Message Count", request: "09 01", bytes: 1 }
+      - { iid: "0x02", name: "Vehicle Identification Number", request: "09 02", bytes: 17, note: "Multi-frame response (5 messages on J1850 VPW)" }
+      - { iid: "0x03", name: "Calibration ID Message Count", request: "09 03", bytes: 1 }
+      - { iid: "0x04", name: "Calibration ID", request: "09 04", bytes: 16, note: "ECM software calibration identifier" }
+      - { iid: "0x05", name: "CVN Message Count", request: "09 05", bytes: 1 }
+      - { iid: "0x06", name: "Calibration Verification Number", request: "09 06", bytes: 4, note: "Checksum of calibration — changes if reflashed" }
+      - { iid: "0x0A", name: "ECU Name", request: "09 0A", bytes: 20, note: "ASCII ECU identifier string" }
+
+  mode_0A:
+    service_id: "0x0A"
+    name: "Request Permanent DTCs"
+    request_format: "0A"
+    response_format: "4A [count] [DTC1_hi] [DTC1_lo] ..."
+    header: "68 6A F1"
+    note: "DTCs that cannot be cleared by Mode 04 — only cleared after repair + drive cycle pass"
+
+  # --- Enhanced / Manufacturer-Specific Services ---
+  mode_22:
+    service_id: "0x22"
+    name: "Read Data By Identifier (Enhanced PIDs)"
+    request_format: "22 [DID_hi] [DID_lo]"
+    response_format: "62 [DID_hi] [DID_lo] [A] [B] ..."
+    note: "GM-specific PIDs. Requires physical addressing (AT SH 6C [node] F1)"
+
+  mode_19:
+    service_id: "0x19"
+    name: "Read DTC Information (GM Enhanced)"
+    header: "6C [node] F1"
+    subfunctions:
+      - { sub: "0x02", name: "Report DTC by Status Mask",  request: "19 02 [mask]", note: "mask 0xFF = all DTCs" }
+      - { sub: "0x0A", name: "Report All Supported DTCs",  request: "19 0A" }
+      - { sub: "0x06", name: "Report DTC Extended Data",   request: "19 06 [DTC_hi] [DTC_lo] [DTC_3]", note: "Occurrence count, aging counter, etc." }
+    note: "GM's enhanced DTC service — richer than Mode 03. Returns status byte per DTC."
+    status_byte_bits:
+      bit0: "testFailed — DTC currently failing"
+      bit1: "testFailedThisOperationCycle"
+      bit2: "pendingDTC"
+      bit3: "confirmedDTC (MIL on)"
+      bit4: "testNotCompletedSinceLastClear"
+      bit5: "testFailedSinceLastClear"
+      bit6: "testNotCompletedThisOperationCycle"
+      bit7: "warningIndicatorRequested (MIL)"
+
+  mode_14:
+    service_id: "0x14"
+    name: "Clear Diagnostic Information (GM Enhanced)"
+    request_format: "14 FF FF FF"
+    response_format: "54"
+    note: "GM enhanced clear — clears DTCs + freeze frame + learned data for target module"
+
+  mode_2F:
+    service_id: "0x2F"
+    name: "Input/Output Control By Identifier (Actuator Tests)"
+    header: "6C [node] F1"
+    note: "Requires security access (Mode 27) on most modules. Use with caution."
+    examples:
+      - { name: "EGR Valve Test",         did: "11 96", control: "0x03 = short-term adjustment", target: "ECM" }
+      - { name: "VGT Vane Test",          did: "11 9B", control: "0x03 = short-term adjustment", target: "ECM" }
+      - { name: "Glow Plug Relay Test",   did: "11 4E", control: "0x03 = enable / 0x00 = return to ECM", target: "ECM" }
+      - { name: "Cooling Fan Relay Test", did: "11 44", control: "0x03 = activate", target: "ECM" }
+    warning: "Improper use can damage components. Never command actuators with engine running unless specified."
+
+  mode_3E:
+    service_id: "0x3E"
+    name: "Tester Present (Keep-Alive)"
+    request_format: "3E"
+    response_format: "7E"
+    header: "6C [node] F1"
+    note: "Send every 2-3 seconds to keep a diagnostic session alive. Required when using Mode 2F/27."
+
+  mode_27:
+    service_id: "0x27"
+    name: "Security Access"
+    header: "6C [node] F1"
+    subfunctions:
+      - { sub: "0x01", name: "Request Seed",   request: "27 01", response: "67 01 [seed1] [seed2]" }
+      - { sub: "0x02", name: "Send Key",       request: "27 02 [key1] [key2]", response: "67 02" }
+    note: "Required before Mode 2F actuator tests or Mode 34/36 programming. Seed/key algorithm is GM proprietary."
+
+  mode_10:
+    service_id: "0x10"
+    name: "Diagnostic Session Control"
+    header: "6C [node] F1"
+    sessions:
+      - { sub: "0x01", name: "Default Session", note: "Normal diagnostic mode, no timeout" }
+      - { sub: "0x02", name: "Programming Session", note: "For ECM reflash — requires Mode 27 first" }
+      - { sub: "0x03", name: "Extended Diagnostic Session", note: "Enables Mode 2F, some enhanced reads" }
+
+  negative_response:
+    service_id: "0x7F"
+    format: "7F [rejected_service] [NRC]"
+    nrc_codes:
+      "0x10": "generalReject"
+      "0x11": "serviceNotSupported"
+      "0x12": "subFunctionNotSupported"
+      "0x13": "incorrectMessageLength"
+      "0x14": "responseTooLong"
+      "0x22": "conditionsNotCorrect (engine must be running, etc.)"
+      "0x31": "requestOutOfRange (PID not supported)"
+      "0x33": "securityAccessDenied (need Mode 27 first)"
+      "0x35": "invalidKey"
+      "0x36": "exceededNumberOfAttempts (locked out — cycle ignition)"
+      "0x37": "requiredTimeDelayNotExpired"
+      "0x72": "generalProgrammingFailure"
+      "0x78": "requestCorrectlyReceived-ResponsePending (wait for real response)"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. DIAGNOSTIC LOGIC OVERRIDES
+# ──────────────────────────────────────────────────────────────────────────────
+
+diagnostic_logic_overrides:
+  p0700_rule:
+    flag_location: "ECM (0x10)"
+    meaning: "ECM is reporting that the TCM has set a DTC. P0700 itself is not a fault."
+    action: "IGNORE P0700 for troubleshooting. Query TCM directly: AT SH 6C 18 F1 → 03"
+
+  ficm_voltage_rule:
+    description: "FICM 48V must be verified before diagnosing any injector DTC"
+    action: "If P0201-P0208 appear, check FICM output voltage FIRST. If < 45V, replace FICM before injectors."
+    ficm_test_procedure:
+      - "Key ON engine OFF"
+      - "Measure between FICM C1-15 (+) and C1-1 (-)"
+      - "Must read 47.5V – 48.5V"
+      - "If < 45V → FICM failure. If 45-47V → marginal, may fail under load."
+
+  turbo_vane_sticking:
+    description: "LLY turbo vane sticking is the #1 reliability issue on this platform"
+    symptoms: ["P0234 (overboost)", "P0299 (underboost)", "Reduced engine power message", "Excessive black smoke"]
+    diagnostic_steps:
+      - "Read VGT Vane Position Actual vs Desired (PIDs 11 9B / 11 91)"
+      - "Error > 10% with engine running = vane sticking"
+      - "Unison ring inspection requires turbo removal"
+    note: "The turbo inlet on LLY is on the driver side, buried under the intake bridge. Access is extremely limited."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. MODE 01 — STANDARD OBD-II PIDs (ECM)
+# ──────────────────────────────────────────────────────────────────────────────
+
+standard_pids_mode_01:
+  header: "68 6A F1"
+  request_prefix: "01"
+  response_prefix: "41"
+  description: "Standard OBD-II PIDs. These are universally defined by SAE J1979."
+  confidence: verified
+  sources: [SAE-J1979, SAE-J1979-DA, CSS-ELECTRONICS]
+
+  supported_pid_bitmaps:
+    note: "Query these first. The ECM bitmap tells you exactly which PIDs it supports."
+    pids:
+      - { pid: "0x00", name: "Supported PIDs [01-20]",  bytes: 4, type: "bitmap" }
+      - { pid: "0x20", name: "Supported PIDs [21-40]",  bytes: 4, type: "bitmap" }
+      - { pid: "0x40", name: "Supported PIDs [41-60]",  bytes: 4, type: "bitmap" }
+      - { pid: "0x60", name: "Supported PIDs [61-80]",  bytes: 4, type: "bitmap" }
+
+  # --- Status & Readiness ---
+  status_pids:
+    - pid: "0x01"
+      name: "Monitor Status Since DTC Clear"
+      bytes: 4
+      type: "bitfield"
+      decoding:
+        byte_A:
+          bit7: "MIL on/off"
+          bits_6_0: "DTC count (0-127)"
+        byte_B:
+          bit0: "Misfire monitoring supported"
+          bit1: "Fuel system monitoring supported"
+          bit2: "Components monitoring supported"
+          bit3: "Compression ignition monitoring supported (diesel = 1)"
+        byte_C_D:
+          note: "Readiness flags for diesel-specific monitors"
+          bit0: "EGR system"
+          bit1: "Boost pressure"
+          bit2: "NOx/SCR (N/A on LLY)"
+          bit3: "NMHC catalyst (N/A on LLY)"
+          bit4: "Misfire"
+          bit5: "Fuel system"
+          bit6: "Comprehensive component"
+          bit7: "Reserved"
+      range:
+        note: "bit3 of byte B MUST be 1 (compression ignition). If 0, wrong vehicle or wrong module responding."
+
+    - { pid: "0x03", name: "Fuel System Status", bytes: 2, formula: "Encoded value", note: "Diesel typically reports 0x00 (open loop) or fuel system not applicable" }
+
+    - pid: "0x1C"
+      name: "OBD Standards This Vehicle Conforms To"
+      bytes: 1
+      formula: "A"
+      expected_value: 6
+      note: "6 = EOBD (EU). GM LLY may also report 1 (OBD-II CARB) depending on calibration."
+
+    - pid: "0x1F"
+      name: "Run Time Since Engine Start"
+      bytes: 2
+      formula: "(A * 256) + B"
+      unit: "seconds"
+      range: { min: 0, max: 65535 }
+
+  # --- Engine Load, RPM, Speed ---
+  engine_performance:
+    - pid: "0x04"
+      name: "Calculated Engine Load"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+      range: { idle: "15-25", cruise: "30-50", full_load: "80-100" }
+
+    - pid: "0x0C"
+      name: "Engine RPM"
+      bytes: 2
+      formula: "((A * 256) + B) / 4"
+      unit: "RPM"
+      range: { idle_warm: 680, idle_cold: 780, redline: 3250, max_value: 3400 }
+      threshold:
+        warning_high: 3100
+        critical_high: 3300
+
+    - pid: "0x0D"
+      name: "Vehicle Speed"
+      bytes: 1
+      formula: "A"
+      unit: "km/h"
+      range: { min: 0, max: 200 }
+
+    - pid: "0x0E"
+      name: "Timing Advance"
+      bytes: 1
+      formula: "(A / 2) - 64"
+      unit: "° BTDC"
+      range: { idle: "4-12", cruise: "8-20", note: "Diesel injection timing, not spark" }
+
+    - pid: "0x11"
+      name: "Throttle Position"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+      note: "Electronic throttle (drive-by-wire). LLY does NOT have a traditional throttle body — this is the intake air shutoff valve position."
+      range: { idle: "12-18", wot: "95-100" }
+
+    - pid: "0x43"
+      name: "Absolute Load Value"
+      bytes: 2
+      formula: "((A * 256) + B) * 100 / 255"
+      unit: "%"
+      range: { min: 0, max: 400 }
+
+    - pid: "0x44"
+      name: "Commanded Equivalence Ratio (Lambda)"
+      bytes: 2
+      formula: "((A * 256) + B) / 32768"
+      unit: "λ"
+      range: { idle: "1.5-3.0", full_load: "1.1-1.3", note: "Diesel always runs lean (λ > 1.0)" }
+
+  # --- Temperatures ---
+  temperatures:
+    - pid: "0x05"
+      name: "Engine Coolant Temperature"
+      bytes: 1
+      formula: "A - 40"
+      unit: "°C"
+      range: { cold_start: "-40 to 20", operating: "85-100" }
+      threshold:
+        warning_high: 105
+        critical_high: 115
+        warning_low: -30
+
+    - pid: "0x0F"
+      name: "Intake Air Temperature"
+      bytes: 1
+      formula: "A - 40"
+      unit: "°C"
+      range: { ambient: "-40 to 50", with_boost: "30-70" }
+      note: "Post-intercooler on LLY. Should be near ambient at idle, elevated under boost."
+
+    - pid: "0x46"
+      name: "Ambient Air Temperature"
+      bytes: 1
+      formula: "A - 40"
+      unit: "°C"
+      range: { min: -40, max: 60 }
+
+    - pid: "0x5C"
+      name: "Engine Oil Temperature"
+      bytes: 1
+      formula: "A - 40"
+      unit: "°C"
+      range: { cold: "-40 to 20", operating: "90-120" }
+      threshold:
+        warning_high: 130
+        critical_high: 145
+
+  # --- Pressures & Airflow ---
+  pressures_airflow:
+    - pid: "0x0B"
+      name: "Intake Manifold Absolute Pressure (MAP)"
+      bytes: 1
+      formula: "A"
+      unit: "kPa"
+      range: { idle: "80-100", full_boost: "200-280" }
+      note: "This is absolute pressure. Subtract barometric for gauge boost."
+
+    - pid: "0x10"
+      name: "Mass Air Flow Rate (MAF)"
+      bytes: 2
+      formula: "((A * 256) + B) / 100"
+      unit: "g/s"
+      range: { idle: "10-20", full_load: "200-350" }
+
+    - pid: "0x33"
+      name: "Barometric Pressure"
+      bytes: 1
+      formula: "A"
+      unit: "kPa"
+      range: { sea_level: "100-103", high_altitude: "75-95" }
+
+    - pid: "0x0A"
+      name: "Fuel Pressure (gauge)"
+      bytes: 1
+      formula: "A * 3"
+      unit: "kPa"
+      note: "Low-side fuel pressure. NOT the high-pressure common rail (use Mode 22 for that)."
+      range: { min: 200, max: 400 }
+
+    - pid: "0x23"
+      name: "Fuel Rail Gauge Pressure (diesel)"
+      bytes: 2
+      formula: "((A * 256) + B) * 10"
+      unit: "kPa"
+      note: "High-pressure common rail. LLY max ~160,000 kPa (23,200 PSI)"
+      range: { idle: "25000-35000", full_load: "130000-160000" }
+
+  # --- EGR & Emissions ---
+  egr_emissions:
+    - pid: "0x2C"
+      name: "Commanded EGR"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+      range: { idle: "0-20", cruise: "10-40", cold: "0" }
+
+    - pid: "0x2D"
+      name: "EGR Error"
+      bytes: 1
+      formula: "((A - 128) * 100) / 128"
+      unit: "%"
+      range: { normal: "-5 to 5" }
+      threshold:
+        warning_high: 10
+        warning_low: -10
+
+  # --- Fuel Trims (limited on diesel) ---
+  fuel_trims:
+    note: "Standard fuel trim PIDs may not be supported on diesel. LLY uses injection quantity correction in Mode 22 instead."
+    pids:
+      - { pid: "0x06", name: "Short Term Fuel Trim Bank 1", bytes: 1, formula: "((A - 128) * 100) / 128", unit: "%", note: "May return 0 or not supported" }
+      - { pid: "0x07", name: "Long Term Fuel Trim Bank 1",  bytes: 1, formula: "((A - 128) * 100) / 128", unit: "%", note: "May return 0 or not supported" }
+
+  # --- Distance & Counters ---
+  counters:
+    - { pid: "0x21", name: "Distance Traveled with MIL On",      bytes: 2, formula: "(A * 256) + B", unit: "km", range: { min: 0, max: 65535 } }
+    - { pid: "0x2F", name: "Fuel Tank Level Input",               bytes: 1, formula: "(A * 100) / 255", unit: "%", range: { min: 0, max: 100 } }
+    - { pid: "0x30", name: "Warm-ups Since DTC Cleared",          bytes: 1, formula: "A", unit: "count", range: { min: 0, max: 255 } }
+    - { pid: "0x31", name: "Distance Since DTC Cleared",          bytes: 2, formula: "(A * 256) + B", unit: "km", range: { min: 0, max: 65535 } }
+
+  # --- Electrical ---
+  electrical:
+    - pid: "0x42"
+      name: "Control Module Voltage"
+      bytes: 2
+      formula: "((A * 256) + B) / 1000"
+      unit: "V"
+      range: { engine_off: "12.0-12.8", engine_running: "13.5-14.8" }
+      threshold:
+        warning_low: 11.5
+        warning_high: 15.5
+        critical_low: 10.5
+        critical_high: 16.0
+
+  # --- Fuel Rate ---
+  fuel:
+    - pid: "0x5E"
+      name: "Engine Fuel Rate"
+      bytes: 2
+      formula: "((A * 256) + B) / 20"
+      unit: "L/h"
+      range: { idle: "1.5-3.0", cruise: "8-15", full_load: "40-60" }
+
+  # --- Throttle & Pedal ---
+  throttle_pedal:
+    - { pid: "0x45", name: "Relative Throttle Position",      bytes: 1, formula: "(A * 100) / 255", unit: "%" }
+    - { pid: "0x47", name: "Absolute Throttle Position B",    bytes: 1, formula: "(A * 100) / 255", unit: "%" }
+    - { pid: "0x49", name: "Accelerator Pedal Position D",    bytes: 1, formula: "(A * 100) / 255", unit: "%", note: "APP Sensor 1 (primary)" }
+    - { pid: "0x4A", name: "Accelerator Pedal Position E",    bytes: 1, formula: "(A * 100) / 255", unit: "%", note: "APP Sensor 2 (redundant)" }
+    - { pid: "0x4C", name: "Commanded Throttle Actuator",     bytes: 1, formula: "(A * 100) / 255", unit: "%" }
+
+  # --- Torque ---
+  torque:
+    - { pid: "0x61", name: "Demanded Engine Torque",  bytes: 1, formula: "A - 125", unit: "%", note: "% of reference torque" }
+    - { pid: "0x62", name: "Actual Engine Torque",    bytes: 1, formula: "A - 125", unit: "%", note: "% of reference torque" }
+    - { pid: "0x63", name: "Engine Reference Torque", bytes: 2, formula: "(A * 256) + B", unit: "Nm", range: { expected: 895 } }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. MODE 22 — ENHANCED ECU PIDs (BOSCH E60 ECM)
+# ──────────────────────────────────────────────────────────────────────────────
+
+enhanced_ecu_pids_mode_22:
+  header: "6C 10 F1"
+  request_prefix: "22"
+  response_prefix: "62"
+  description: "Manufacturer-specific PIDs for Bosch E60 ECM. Physical addressing required."
+  confidence_note: |
+    Enhanced PID addresses are GM-proprietary and not publicly standardized.
+    Confidence levels vary per subsection. PIDs marked 'inferred' are derived
+    from training data and MUST be verified on-vehicle before trusting.
+    The definitive source is GM-ACDELCO-TDS (ACDelco TDS subscription).
+
+  # --- Fuel System (High-Pressure Common Rail) ---
+  fuel_system:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS, DIABLOSPORT-TRINITY]
+    source_note: "Fuel system PID addresses need verification against Tech2 or EFI Live. Formulas are typical Bosch common-rail scaling but addresses may differ by ECM calibration."
+    pids:
+      - pid: "11 70"
+        name: "Fuel Rail Pressure Actual"
+        bytes: 2
+        formula: "((A * 256) + B) * 10"
+        unit: "kPa"
+        range: { idle: "25000-35000", full_load: "130000-160000" }
+        note: "23,200 PSI max. Primary diagnostic parameter for injector and CP3 pump health."
+        threshold:
+          warning_low: 20000
+          critical_low: 15000
+
+      - pid: "11 71"
+        name: "Fuel Rail Pressure Desired"
+        bytes: 2
+        formula: "((A * 256) + B) * 10"
+        unit: "kPa"
+        range: { idle: "25000-35000", full_load: "130000-160000" }
+
+      - pid: "11 72"
+        name: "Fuel Rail Pressure Error"
+        bytes: 2
+        formula: "signed_int(A,B) * 10"
+        unit: "kPa"
+        range: { normal: "-2000 to 2000" }
+        note: "Actual minus desired. Large error = failing CP3 pump, FRP sensor, or injector leak-back."
+        threshold:
+          warning_high: 5000
+          warning_low: -5000
+
+      - pid: "11 73"
+        name: "Fuel Rail Pressure Regulator Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+        range: { idle: "20-40", full_load: "50-80" }
+        note: "CP3 pump metering valve duty cycle. 100% = pump commanding max pressure but can't reach it."
+
+      - pid: "11 74"
+        name: "Fuel Temperature"
+        bytes: 1
+        formula: "A - 40"
+        unit: "°C"
+        range: { cold: "-40 to 20", operating: "30-70" }
+        threshold:
+          warning_high: 80
+          critical_high: 90
+        note: "Fuel temp affects viscosity and rail pressure control. >80°C degrades injector life."
+
+      - pid: "11 75"
+        name: "Injection Main Timing Actual"
+        bytes: 2
+        formula: "signed_int(A,B) / 100"
+        unit: "° BTDC"
+        range: { idle: "2-8", full_load: "8-18" }
+
+      - pid: "11 76"
+        name: "Injection Main Timing Desired"
+        bytes: 2
+        formula: "signed_int(A,B) / 100"
+        unit: "° BTDC"
+
+      - pid: "11 77"
+        name: "Injection Main Quantity Actual"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "mm3/stroke"
+        range: { idle: "5-12", full_load: "60-85" }
+
+      - pid: "11 78"
+        name: "Injection Main Quantity Desired"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "mm3/stroke"
+
+      - pid: "11 79"
+        name: "Pilot Injection Quantity"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "mm3/stroke"
+        range: { normal: "1.5-4.0" }
+        note: "Small pre-injection to reduce combustion noise. Absent at high RPM."
+
+      - pid: "11 7A"
+        name: "Pilot Injection Timing"
+        bytes: 2
+        formula: "signed_int(A,B) / 100"
+        unit: "° BTDC"
+        range: { normal: "15-30" }
+
+  # --- Injector Diagnostics ---
+  injector_diagnostics:
+    confidence: community
+    sources:
+      - DMAX-BALANCE-RATES-TORQUEBHP
+      - DMAX-BALANCE-RATES-DIESELPLACE-1
+      - DMAX-BALANCE-RATES-DIESELPLACE-2
+      - DMAX-BALANCE-RATES-DURAMAXFORUM
+      - DMAX-TORQUE-PRO-BALANCE-RATES
+      - DMAX-BALANCE-RATES-PISTONTWISTIN
+      - DMAX-BALANCE-RATES-INJECTORSDIRECT
+    description: "Balance rates indicate per-cylinder fuel trim corrections. Values far from 0 indicate injector wear or failure."
+    scaling_formula: "((A * 256 + B) - 32768) / 64"
+    unit: "mm3"
+    range:
+      healthy: "+/- 2.0"
+      normal_park_neutral: "+/- 4.0"
+      normal_in_gear_idle: "+/- 6.0"
+      replacement_indicator: "> +/- 4.0 to 5.0 (in P/N)"
+    note: |
+      Balance rates must be read at idle, warm engine (coolant > 80°C), no accessories on.
+      ELM327 command requires trailing 01 data rate byte (e.g. '22 16 2F 01').
+      PIDs verified against GM Tech2 by multiple independent sources.
+    pids:
+      - { pid: "16 2F", name: "Balance Rate Cyl 1", bytes: 2 }
+      - { pid: "16 30", name: "Balance Rate Cyl 2", bytes: 2 }
+      - { pid: "16 31", name: "Balance Rate Cyl 3", bytes: 2 }
+      - { pid: "16 32", name: "Balance Rate Cyl 4", bytes: 2 }
+      - { pid: "16 33", name: "Balance Rate Cyl 5", bytes: 2 }
+      - { pid: "16 34", name: "Balance Rate Cyl 6", bytes: 2 }
+      - { pid: "16 35", name: "Balance Rate Cyl 7", bytes: 2 }
+      - { pid: "16 36", name: "Balance Rate Cyl 8", bytes: 2 }
+
+  # --- VGT Turbocharger ---
+  vgt_turbo:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS, DIABLOSPORT-TRINITY]
+    source_note: "VGT vane position PIDs are widely referenced in aftermarket tuning but specific addresses need Tech2 verification."
+    description: "Garrett GT3788VA Variable Geometry Turbo. Vane position controls boost."
+    pids:
+      - pid: "11 9B"
+        name: "VGT Vane Position Actual"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+        range: { idle: "40-60", full_boost: "10-30" }
+        note: "0% = fully open (low restriction, low boost). 100% = fully closed (max boost)."
+
+      - pid: "11 91"
+        name: "VGT Vane Position Desired"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "11 9C"
+        name: "VGT Vane Position Error"
+        bytes: 1
+        formula: "((A - 128) * 100) / 128"
+        unit: "%"
+        range: { normal: "-5 to 5" }
+        threshold:
+          warning_high: 8
+          warning_low: -8
+          critical_high: 15
+        note: "Error > 10% = vane sticking. The #1 LLY reliability issue."
+
+      - pid: "11 15"
+        name: "VGT Duty Cycle / Actuator Command"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "11 16"
+        name: "Boost Pressure Actual"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+        range: { idle: "95-103", full_load: "200-270" }
+        note: "Absolute pressure. Subtract barometric for gauge boost (max ~24 PSI stock)."
+        threshold:
+          critical_high: 290
+
+      - pid: "11 17"
+        name: "Boost Pressure Desired"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+
+      - pid: "11 18"
+        name: "Boost Pressure Error"
+        bytes: 2
+        formula: "signed_int(A,B) / 10"
+        unit: "kPa"
+        range: { normal: "-5 to 5" }
+
+      - pid: "11 19"
+        name: "Charge Air Cooler Outlet Temperature"
+        bytes: 1
+        formula: "A - 40"
+        unit: "°C"
+        range: { cold: "-40 to 20", operating: "30-65" }
+        note: "Post-intercooler temp. Should be 20-40°C above ambient under boost. Higher = clogged intercooler."
+        threshold:
+          warning_high: 75
+          critical_high: 90
+
+  # --- EGR System ---
+  egr_system:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS]
+    description: "Exhaust Gas Recirculation — reduces NOx. Electric stepper motor on LLY."
+    pids:
+      - pid: "11 96"
+        name: "EGR Position Actual"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+        range: { closed: "0-2", operating: "0-40" }
+
+      - pid: "11 95"
+        name: "EGR Position Desired"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "11 97"
+        name: "EGR Position Error"
+        bytes: 1
+        formula: "((A - 128) * 100) / 128"
+        unit: "%"
+        range: { normal: "-3 to 3" }
+
+      - pid: "11 98"
+        name: "EGR Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "11 9A"
+        name: "EGR Mass Flow Rate"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "g/s"
+        range: { idle: "0-5", cruise: "5-30" }
+
+  # --- Glow Plugs & Intake Heater ---
+  glow_plugs:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS]
+    description: "8 individual glow plugs + intake air heater grid"
+    pids:
+      - pid: "11 4E"
+        name: "Glow Plug Lamp/Relay Status"
+        bytes: 1
+        formula: "Bitmask"
+        decoding:
+          bit0: "Glow plug relay command (1=ON)"
+          bit1: "Glow plug lamp command (1=ON)"
+          bit2: "Intake heater relay 1 (1=ON)"
+          bit3: "Intake heater relay 2 (1=ON)"
+
+      - pid: "11 4F"
+        name: "Glow Plug On-Time Remaining"
+        bytes: 1
+        formula: "A"
+        unit: "seconds"
+        range: { cold_start: "10-30", warm: "0-5" }
+
+      - pid: "11 90"
+        name: "Glow Plug Circuit Status"
+        bytes: 1
+        formula: "Bitmask (8 bits = 8 glow plugs)"
+        decoding:
+          bit0: "Cyl 1 glow plug circuit OK (1=fault)"
+          bit1: "Cyl 2 glow plug circuit OK (1=fault)"
+          bit2: "Cyl 3 glow plug circuit OK (1=fault)"
+          bit3: "Cyl 4 glow plug circuit OK (1=fault)"
+          bit4: "Cyl 5 glow plug circuit OK (1=fault)"
+          bit5: "Cyl 6 glow plug circuit OK (1=fault)"
+          bit6: "Cyl 7 glow plug circuit OK (1=fault)"
+          bit7: "Cyl 8 glow plug circuit OK (1=fault)"
+        note: "Read KOEO. Any bit set = open or shorted glow plug in that cylinder."
+
+  # --- Engine Mechanical ---
+  engine_mechanical:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS]
+    pids:
+      - pid: "11 44"
+        name: "Engine Fan Speed"
+        bytes: 2
+        formula: "(A * 256 + B) / 4"
+        unit: "RPM"
+        range: { off: "0", low: "200-800", high: "1500-2800" }
+        note: "Viscous clutch fan. High fan speed at idle can indicate overheating or A/C high pressure."
+
+      - pid: "11 45"
+        name: "Fan Clutch Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+        range: { normal: "0-60", max_cooling: "80-100" }
+
+      - pid: "11 50"
+        name: "Engine Oil Pressure"
+        bytes: 1
+        formula: "A * 4"
+        unit: "kPa"
+        range: { idle: "140-280", driving: "280-550" }
+        threshold:
+          warning_low: 100
+          critical_low: 70
+        note: "Low oil pressure at idle on a warm LLY can indicate worn bearings or oil pump."
+
+      - pid: "11 51"
+        name: "Engine Oil Temperature (Enhanced)"
+        bytes: 1
+        formula: "A - 40"
+        unit: "°C"
+        range: { cold: "-40 to 20", operating: "90-120" }
+        threshold:
+          warning_high: 130
+          critical_high: 145
+
+      - pid: "11 52"
+        name: "Engine Coolant Temperature (Enhanced)"
+        bytes: 1
+        formula: "A - 40"
+        unit: "°C"
+        note: "Same as Mode 01 PID 05 but via enhanced path."
+
+      - pid: "11 53"
+        name: "Engine Coolant Level"
+        bytes: 1
+        formula: "Bit0"
+        unit: "Binary"
+        decoding:
+          "0": "Level OK"
+          "1": "Low coolant"
+
+      - pid: "11 60"
+        name: "Crankshaft Position Variation"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "RPM variation"
+        range: { normal: "0-30", rough_idle: "30-80", misfire: ">80" }
+        note: "Detects per-cylinder contribution differences. High variation = injector imbalance or mechanical issue."
+
+      - pid: "11 61"
+        name: "Idle Speed Actual"
+        bytes: 2
+        formula: "(A * 256) + B"
+        unit: "RPM"
+        range: { warm: "670-700", cold: "760-800" }
+
+      - pid: "11 62"
+        name: "Idle Speed Desired"
+        bytes: 2
+        formula: "(A * 256) + B"
+        unit: "RPM"
+
+  # --- Sensor Voltages (Raw) ---
+  sensor_voltages:
+    confidence: unverified
+    sources: [GM-ACDELCO-TDS]
+    source_note: "Sensor voltage PID addresses are UNVERIFIED. These are typical GM patterns but specific addresses MUST be confirmed via Tech2 or ACDelco TDS before use."
+    description: "Raw sensor voltages for signal-level diagnostics"
+    pids:
+      - { pid: "11 A0", name: "APP Sensor 1 Voltage",        bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { idle: "0.5-0.9", wot: "3.5-4.5" } }
+      - { pid: "11 A1", name: "APP Sensor 2 Voltage",        bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { idle: "0.25-0.45", wot: "1.75-2.25" } }
+      - { pid: "11 A2", name: "MAP Sensor Voltage",           bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { idle: "1.0-1.5", boost: "2.5-4.5" } }
+      - { pid: "11 A3", name: "MAF Sensor Voltage",           bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { idle: "1.0-1.5", full_flow: "3.5-4.5" } }
+      - { pid: "11 A4", name: "Coolant Temp Sensor Voltage",  bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { cold: "4.0-4.5", hot: "0.5-1.5" } }
+      - { pid: "11 A5", name: "Fuel Temp Sensor Voltage",     bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { cold: "3.5-4.5", hot: "1.0-2.5" } }
+      - { pid: "11 A6", name: "Fuel Rail Pressure Sensor Voltage", bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { koeo: "0.5", max: "4.5" } }
+      - { pid: "11 A7", name: "EGR Position Sensor Voltage",  bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { closed: "0.5-1.0", open: "3.5-4.5" } }
+      - { pid: "11 A8", name: "Barometric Pressure Sensor Voltage", bytes: 2, formula: "((A * 256) + B) / 1000", unit: "V", range: { sea_level: "2.0-2.5" } }
+
+  # --- Torque & Performance ---
+  torque_performance:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS]
+    pids:
+      - pid: "11 B0"
+        name: "Engine Torque Actual"
+        bytes: 2
+        formula: "signed_int(A,B)"
+        unit: "Nm"
+        range: { idle: "50-100", full_load: "800-900" }
+
+      - pid: "11 B1"
+        name: "Engine Torque Demand (from TCM)"
+        bytes: 2
+        formula: "signed_int(A,B)"
+        unit: "Nm"
+        note: "Torque requested by TCM during shifts for smooth clutch engagement."
+
+      - pid: "11 B2"
+        name: "Engine Torque Reference"
+        bytes: 2
+        formula: "(A * 256) + B"
+        unit: "Nm"
+        range: { expected: 895 }
+
+      - pid: "11 B3"
+        name: "Percent Load at Current Speed"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "11 B4"
+        name: "Driver Demand Torque"
+        bytes: 1
+        formula: "A - 125"
+        unit: "%"
+        note: "% of reference torque requested via accelerator pedal"
+
+  # --- Electrical System ---
+  electrical:
+    confidence: inferred
+    sources: [GM-ACDELCO-TDS]
+    pids:
+      - pid: "11 C0"
+        name: "Battery Voltage (Enhanced)"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "V"
+        range: { engine_off: "12.0-12.8", running: "13.5-14.8" }
+
+      - pid: "11 C1"
+        name: "Alternator Field Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+        range: { normal: "30-70", high_load: "70-95" }
+        note: "Low duty cycle = alternator or voltage regulator issue. 0% = no alternator output."
+
+      - pid: "11 C2"
+        name: "Alternator Command Voltage"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "V"
+        range: { normal: "13.8-14.6" }
+
+  # --- System Status Flags ---
+  system_status:
+    confidence: unverified
+    sources: [GM-ACDELCO-TDS]
+    source_note: "Status flag PID addresses are UNVERIFIED. Typical GM patterns but need on-vehicle confirmation."
+    pids:
+      - pid: "11 D0"
+        name: "A/C Compressor Clutch Status"
+        bytes: 1
+        formula: "Bit0"
+        decoding:
+          "0": "A/C off"
+          "1": "A/C compressor engaged"
+
+      - pid: "11 D1"
+        name: "A/C High-Side Pressure"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+        range: { normal: "1000-2500" }
+
+      - pid: "11 D2"
+        name: "Cruise Control Status"
+        bytes: 1
+        formula: "Bitmask"
+        decoding:
+          bit0: "Cruise enabled"
+          bit1: "Cruise active (set)"
+          bit2: "Cruise coast"
+          bit3: "Cruise resume"
+          bit4: "Cruise accel"
+          bit5: "Brake switch input"
+
+      - pid: "11 D3"
+        name: "Idle Validation Switch"
+        bytes: 1
+        formula: "Bit0"
+        decoding:
+          "0": "Throttle not at idle"
+          "1": "Throttle at idle position"
+
+      - pid: "11 D5"
+        name: "MIL Status (Enhanced)"
+        bytes: 1
+        formula: "Bit0"
+        decoding:
+          "0": "MIL off"
+          "1": "MIL on"
+
+      - pid: "11 D6"
+        name: "Reduced Engine Power Mode"
+        bytes: 1
+        formula: "Bitmask"
+        decoding:
+          bit0: "Reduced power active"
+          bit1: "Forced idle active"
+          bit2: "Engine shutdown pending"
+        note: "LLY commonly enters reduced power from turbo vane codes or APP sensor faults."
+
+      - pid: "11 D7"
+        name: "Starter Motor Status"
+        bytes: 1
+        formula: "Bitmask"
+        decoding:
+          bit0: "Starter relay command"
+          bit1: "Crank detect"
+
+  # --- Exhaust ---
+  exhaust:
+    confidence: unverified
+    sources: [GM-ACDELCO-TDS]
+    pids:
+      - pid: "11 E0"
+        name: "Exhaust Back Pressure"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+        range: { idle: "100-110", full_load: "120-180" }
+        note: "LLY does not have a DPF (that's LBZ+). This is raw exhaust pressure."
+
+      - pid: "11 E1"
+        name: "Exhaust Gas Temperature (if sensor equipped)"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "°C"
+        range: { idle: "150-250", full_load: "500-700" }
+        note: "Factory EGT sensor not standard on all LLY. Common aftermarket add."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. MODE 22 — ENHANCED TCM PIDs (ALLISON 1000)
+# ──────────────────────────────────────────────────────────────────────────────
+
+enhanced_tcm_pids_allison:
+  header: "6C 18 F1"
+  request_prefix: "22"
+  response_prefix: "62"
+  description: "Allison 1000 5-Speed Automatic — Gen 3/4 TCM enhanced data"
+  confidence_note: |
+    TCM PIDs are proprietary Allison data. PID 19 40 (TFT) is community-verified.
+    Other core PIDs (19 41-45, 19 62) are widely referenced in aftermarket tools.
+    Gear data, adaptive trims, and pressure PIDs need on-vehicle verification.
+    Definitive source is Allison DOC software.
+
+  # --- Core Transmission Data ---
+  core_data:
+    confidence: community
+    sources: [ALLISON-DOC, ALLISON-TS3977EN, ALLISON-TCM-GMTNATION, DIABLOSPORT-TRINITY]
+    pids:
+      - pid: "19 40"
+        name: "Transmission Fluid Temperature (TFT)"
+        bytes: 1
+        formula: "A - 40"
+        unit: "°C"
+        range: { cold: "-40 to 30", operating: "70-100" }
+        threshold:
+          warning_high: 110
+          critical_high: 130
+        note: "TFT > 120°C dramatically accelerates fluid degradation and clutch wear."
+
+      - pid: "19 41"
+        name: "Turbine (Input) Shaft Speed"
+        bytes: 2
+        formula: "(A * 256) + B"
+        unit: "RPM"
+        note: "Speed of the torque converter turbine = transmission input speed."
+
+      - pid: "19 42"
+        name: "Output Shaft Speed"
+        bytes: 2
+        formula: "(A * 256) + B"
+        unit: "RPM"
+        note: "Proportional to vehicle speed. Used to calculate gear ratio."
+
+      - pid: "19 45"
+        name: "Main Shaft Speed"
+        bytes: 2
+        formula: "(A * 256) + B"
+        unit: "RPM"
+        note: "Internal mainshaft speed sensor."
+
+      - pid: "19 43"
+        name: "TCC Slip Speed"
+        bytes: 2
+        formula: "signed_int(A,B)"
+        unit: "RPM"
+        range: { unlocked: "200-500", locked: "-20 to 20" }
+        note: "Engine RPM minus turbine RPM. Should be near 0 when TCC is locked."
+        threshold:
+          warning_high: 60
+          note: "Persistent slip > 50 RPM when TCC commanded = worn TCC or low line pressure."
+
+  # --- Gear & Ratio ---
+  gear_data:
+    confidence: inferred
+    sources: [ALLISON-DOC, ALLISON-TS3977EN]
+    pids:
+      - pid: "19 48"
+        name: "Current Gear"
+        bytes: 1
+        formula: "A"
+        unit: "gear"
+        decoding:
+          "0": "Park/Neutral"
+          "1": "1st"
+          "2": "2nd"
+          "3": "3rd"
+          "4": "4th"
+          "5": "5th"
+          "6": "Reverse"
+        note: "Currently engaged gear."
+
+      - pid: "19 49"
+        name: "Commanded Gear"
+        bytes: 1
+        formula: "A"
+        unit: "gear"
+        note: "Gear the TCM is shifting to. Differs from current gear during a shift."
+
+      - pid: "19 4A"
+        name: "Gear Ratio (Calculated)"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "ratio"
+        note: "Turbine speed / output speed. Compare to known ratios for slip detection."
+        expected_ratios:
+          first: 3.10
+          second: 1.81
+          third: 1.41
+          fourth: 1.00
+          fifth: 0.71
+
+      - pid: "19 4B"
+        name: "Range Selector Position"
+        bytes: 1
+        formula: "A"
+        decoding:
+          "1": "Park"
+          "2": "Reverse"
+          "3": "Neutral"
+          "4": "Drive"
+          "5": "D3 (3rd max)"
+          "6": "D2 (2nd max)"
+          "7": "D1 (1st only)"
+
+      - pid: "19 4C"
+        name: "Internal Mode Switch"
+        bytes: 1
+        formula: "Bitmask"
+        note: "Manual valve position sensor inside the trans. Misread = wrong gear commands."
+        decoding:
+          bit0: "Switch A"
+          bit1: "Switch B"
+          bit2: "Switch C"
+          bit3: "Switch P (park)"
+
+      - pid: "19 4D"
+        name: "Shift In Progress"
+        bytes: 1
+        formula: "Bit0"
+        decoding:
+          "0": "No shift"
+          "1": "Shift in progress"
+
+  # --- Pressure Control ---
+  pressure_control:
+    pids:
+      - pid: "19 62"
+        name: "TCC PWM Solenoid Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+        range: { released: "0-5", apply: "20-60", locked: "85-100" }
+
+      - pid: "19 44"
+        name: "PCS (Pressure Control Solenoid) Current"
+        bytes: 1
+        formula: "A * 0.0196"
+        unit: "Amps"
+        range: { low_pressure: "0.1-0.3", high_pressure: "0.8-1.0" }
+        note: "Main line pressure control. Higher current = higher line pressure."
+
+      - pid: "19 50"
+        name: "Line Pressure Actual"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+        range: { park_neutral: "400-700", drive_idle: "600-900", full_load: "1200-1800" }
+        note: "Mainline hydraulic pressure. Low pressure = clutch slip. High = harsh shifts."
+
+      - pid: "19 51"
+        name: "Line Pressure Commanded"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+
+      - pid: "19 52"
+        name: "Torque Converter Apply Pressure"
+        bytes: 2
+        formula: "((A * 256) + B) / 10"
+        unit: "kPa"
+
+  # --- Solenoid States ---
+  solenoid_states:
+    confidence: inferred
+    sources: [ALLISON-DOC, ALLISON-TS3977EN]
+    pids:
+      - pid: "19 91"
+        name: "Solenoid Logic State (Commanded)"
+        bytes: 1
+        type: "Bitmask"
+        decoding:
+          bit0: "Shift Solenoid A (SS-A)"
+          bit1: "Shift Solenoid B (SS-B)"
+          bit2: "Shift Solenoid C (SS-C)"
+          bit3: "Shift Solenoid D (SS-D)"
+          bit4: "Shift Solenoid E (SS-E)"
+          bit5: "Shift Solenoid G (SS-G)"
+        note: "Each solenoid on/off pattern determines which gear is engaged."
+        gear_solenoid_map:
+          park_neutral: "A=1, B=0, C=0, D=0, E=0, G=0"
+          first:        "A=1, B=0, C=0, D=0, E=0, G=1"
+          second:       "A=1, B=0, C=1, D=0, E=0, G=1"
+          third:        "A=1, B=0, C=1, D=1, E=0, G=1"
+          fourth:       "A=1, B=0, C=1, D=1, E=1, G=1"
+          fifth:        "A=0, B=0, C=1, D=1, E=1, G=1"
+          reverse:      "A=0, B=1, C=0, D=0, E=0, G=1"
+
+      - pid: "19 92"
+        name: "Solenoid Actual State (Feedback)"
+        bytes: 1
+        type: "Bitmask"
+        note: "Same bit layout as 19 91. Compare to commanded — mismatch = electrical fault."
+
+      - pid: "19 60"
+        name: "SS-A Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "19 61"
+        name: "SS-B Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "19 63"
+        name: "SS-C Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "19 64"
+        name: "SS-D Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "19 65"
+        name: "SS-E Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+      - pid: "19 66"
+        name: "SS-G Duty Cycle"
+        bytes: 1
+        formula: "(A * 100) / 255"
+        unit: "%"
+
+  # --- Clutch Volume Indices (Adaptive Learning) ---
+  clutch_data:
+    confidence: inferred
+    sources: [ALLISON-DOC, ALLISON-TS3977EN]
+    description: "Clutch volume indices track adaptive fill time for each clutch pack. Rising values indicate wear."
+    pids:
+      - { pid: "19 46", name: "C1 Clutch Volume Index", bytes: 1, formula: "A", unit: "index", range: { new: "0-30", worn: "30-60", failing: ">60" } }
+      - { pid: "19 47", name: "C2 Clutch Volume Index", bytes: 1, formula: "A", unit: "index", range: { new: "0-30", worn: "30-60", failing: ">60" } }
+      - { pid: "19 53", name: "C3 Clutch Volume Index", bytes: 1, formula: "A", unit: "index", range: { new: "0-30", worn: "30-60", failing: ">60" } }
+      - { pid: "19 54", name: "C4 Clutch Volume Index", bytes: 1, formula: "A", unit: "index", range: { new: "0-30", worn: "30-60", failing: ">60" } }
+      - { pid: "19 55", name: "C5 Clutch Volume Index", bytes: 1, formula: "A", unit: "index", range: { new: "0-30", worn: "30-60", failing: ">60" } }
+    note: "C1-C5 correspond to the 5 clutch packs. Monitor these over time — rising values = progressive wear."
+
+  # --- Adaptive Trim Values ---
+  adaptive_trims:
+    confidence: unverified
+    sources: [ALLISON-DOC]
+    source_note: "Adaptive trim PID addresses are UNVERIFIED. Need Allison DOC confirmation."
+    description: "Per-gear shift timing adaptations. TCM learns corrections for smooth shifts."
+    pids:
+      - { pid: "19 70", name: "1-2 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+      - { pid: "19 71", name: "2-3 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+      - { pid: "19 72", name: "3-4 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+      - { pid: "19 73", name: "4-5 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+      - { pid: "19 74", name: "3-2 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+      - { pid: "19 75", name: "4-3 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+      - { pid: "19 76", name: "5-4 Shift Adaptive Offset",  bytes: 2, formula: "signed_int(A,B)", unit: "ms" }
+    note: "Large adaptive values suggest mechanical wear. Reset with DTC clear or TCM relearn."
+
+  # --- Torque Management ---
+  torque_management:
+    confidence: unverified
+    sources: [ALLISON-DOC, SAE-J1939]
+    pids:
+      - pid: "19 80"
+        name: "Engine Torque Input (from ECM via J1939)"
+        bytes: 2
+        formula: "signed_int(A,B)"
+        unit: "Nm"
+        note: "Torque value the TCM receives from the ECM over the powertrain data bus."
+
+      - pid: "19 81"
+        name: "TCM Torque Request to ECM"
+        bytes: 2
+        formula: "signed_int(A,B)"
+        unit: "Nm"
+        note: "Torque reduction request during shifts for smooth engagement."
+
+      - pid: "19 82"
+        name: "Converter Torque Ratio"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "ratio"
+        range: { stall: "1.8-2.2", lockup: "1.00" }
+
+  # --- Transfer Case (4WD models only) ---
+  transfer_case:
+    confidence: unverified
+    sources: [GM-ACDELCO-TDS]
+    note: "Only present on K-series (4WD). C-series (2WD) will return 7F (not supported)."
+    pids:
+      - pid: "19 A0"
+        name: "Transfer Case Position"
+        bytes: 1
+        formula: "A"
+        decoding:
+          "1": "2WD High"
+          "2": "4WD Auto"
+          "3": "4WD High"
+          "4": "4WD Low"
+          "5": "Neutral"
+
+      - pid: "19 A1"
+        name: "Front Axle Engagement"
+        bytes: 1
+        formula: "Bit0"
+        decoding:
+          "0": "Disengaged"
+          "1": "Engaged"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10. FICM (Fuel Injection Control Module) DIAGNOSTICS
+# ──────────────────────────────────────────────────────────────────────────────
+
+ficm_diagnostics:
+  node: "0x11"
+  header: "6C 11 F1"
+  description: "The FICM (EDU) converts 12V battery to 48V for injector firing. It is a common failure point on LLY."
+  confidence: community
+  sources: [GM-ACDELCO-TDS, GM-TSB-LLY, BOSCH-E60-SMC, OFI-DMAX-DIAG]
+
+  obd_pids:
+    note: "FICM OBD queryability varies by hardware revision. Some respond to Mode 22, others only to bench test."
+    pids:
+      - pid: "11 00"
+        name: "FICM Supply Voltage"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "V"
+        range: { running: "47.5-48.5" }
+        threshold:
+          warning_low: 46.0
+          critical_low: 45.0
+        note: "Below 45V = FICM failure. Below 47V = marginal, may cause hard starts and misfires."
+
+      - pid: "11 01"
+        name: "FICM Battery Input Voltage"
+        bytes: 2
+        formula: "((A * 256) + B) / 100"
+        unit: "V"
+        range: { running: "13.5-14.8" }
+
+  manual_test:
+    component: "Fuel Injection Control Module (EDU)"
+    high_voltage_circuit:
+      target_output: "48.0V DC"
+      min_allowable: "45.0V DC (failing if lower)"
+      test_points: "FICM connector C1-15 (+) to C1-1 (-)"
+    power_supply_test:
+      - { pin: "C1-7",     spec: "12V Constant",       fuse: "INJB (25A)" }
+      - { pin: "C1-18",    spec: "12V Switched (IGN)",  fuse: "ECMPRV (15A)" }
+      - { pin: "C1-1,2,4", spec: "< 0.5 Ohms to Ground" }
+    injector_harness:
+      resistance_spec: "0.3 - 0.4 Ohms per injector (measured at FICM connector)"
+      failure_notes: "LLY #2 and #7 injector harness connectors are high-failure points — chafe against valve covers, short to ground."
+    capacitor_bank:
+      description: "Internal 48V capacitor bank charges between injection events"
+      test: "Key ON, wait 10 seconds, measure 48V. If voltage sags below 45V within 5 cranking seconds, caps are failing."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 11. BCM (Body Control Module) ACCESSIBLE PIDs
+# ──────────────────────────────────────────────────────────────────────────────
+
+bcm_pids:
+  header: "6C 40 F1"
+  request_prefix: "22"
+  response_prefix: "62"
+  description: "Body Control Module — accessible via J1850 VPW. Controls lighting, security, windows."
+  confidence: unverified
+  sources: [GM-ACDELCO-TDS]
+  source_note: "BCM PID addresses are UNVERIFIED and the LEAST reliable section of this spec. BCM PIDs vary significantly by trim level, options, and production date. MUST be verified against ACDelco TDS or Tech2 before use."
+  note: "BCM PID support varies by trim level and options."
+
+  pids:
+    - { pid: "10 00", name: "BCM Supported PIDs Bitmap", bytes: 4, type: "bitmap" }
+    - pid: "10 01"
+      name: "Battery Voltage (BCM)"
+      bytes: 2
+      formula: "((A * 256) + B) / 100"
+      unit: "V"
+
+    - pid: "10 10"
+      name: "Exterior Lighting Status"
+      bytes: 1
+      type: "Bitmask"
+      decoding:
+        bit0: "Headlights"
+        bit1: "High beams"
+        bit2: "Parking lights"
+        bit3: "Turn signal left"
+        bit4: "Turn signal right"
+        bit5: "Hazard flashers"
+        bit6: "Fog lights"
+        bit7: "DRL (Daytime Running Lights)"
+
+    - pid: "10 11"
+      name: "Interior Lighting Status"
+      bytes: 1
+      type: "Bitmask"
+      decoding:
+        bit0: "Dome light"
+        bit1: "Instrument illumination"
+        bit2: "Courtesy lights"
+
+    - pid: "10 20"
+      name: "Door Ajar Status"
+      bytes: 1
+      type: "Bitmask"
+      decoding:
+        bit0: "Driver door"
+        bit1: "Passenger door"
+        bit2: "Left rear door (crew cab)"
+        bit3: "Right rear door (crew cab)"
+        bit4: "Tailgate"
+
+    - pid: "10 21"
+      name: "Lock Status"
+      bytes: 1
+      type: "Bitmask"
+      decoding:
+        bit0: "Driver lock (1=locked)"
+        bit1: "Passenger lock"
+        bit2: "Left rear lock"
+        bit3: "Right rear lock"
+        bit4: "Tailgate lock"
+
+    - pid: "10 30"
+      name: "Key Position"
+      bytes: 1
+      formula: "A"
+      decoding:
+        "0": "Off"
+        "1": "Accessory"
+        "2": "Run"
+        "3": "Crank"
+
+    - pid: "10 31"
+      name: "Passlock/Theft Deterrent Status"
+      bytes: 1
+      type: "Bitmask"
+      decoding:
+        bit0: "Security system armed"
+        bit1: "Valid key detected"
+        bit2: "Theft deterrent active (fuel disabled)"
+      note: "If bit2=1 and engine won't start, the Passlock system has disabled fuel. 10-minute relearn required."
+
+    - pid: "10 40"
+      name: "Odometer"
+      bytes: 4
+      formula: "((A * 16777216) + (B * 65536) + (C * 256) + D) / 10"
+      unit: "km"
+
+    - pid: "10 41"
+      name: "Fuel Level (BCM)"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 12. ABS / EBCM (Electronic Brake Control Module)
+# ──────────────────────────────────────────────────────────────────────────────
+
+abs_ebcm_pids:
+  header: "6C 28 F1"
+  request_prefix: "22"
+  response_prefix: "62"
+  description: "ABS / traction control / stability system module"
+  confidence: unverified
+  sources: [GM-ACDELCO-TDS]
+  source_note: "ABS/EBCM PID addresses are UNVERIFIED. Based on typical GM EBCM patterns. Need Tech2 confirmation."
+
+  pids:
+    - pid: "12 00"
+      name: "Wheel Speed — Left Front"
+      bytes: 2
+      formula: "((A * 256) + B) / 16"
+      unit: "km/h"
+
+    - pid: "12 01"
+      name: "Wheel Speed — Right Front"
+      bytes: 2
+      formula: "((A * 256) + B) / 16"
+      unit: "km/h"
+
+    - pid: "12 02"
+      name: "Wheel Speed — Left Rear"
+      bytes: 2
+      formula: "((A * 256) + B) / 16"
+      unit: "km/h"
+
+    - pid: "12 03"
+      name: "Wheel Speed — Right Rear"
+      bytes: 2
+      formula: "((A * 256) + B) / 16"
+      unit: "km/h"
+
+    - pid: "12 10"
+      name: "ABS Status"
+      bytes: 1
+      type: "Bitmask"
+      decoding:
+        bit0: "ABS active"
+        bit1: "Traction control active"
+        bit2: "Stability control active (if equipped)"
+        bit3: "ABS lamp on"
+        bit4: "Traction control lamp on"
+
+    - pid: "12 11"
+      name: "Brake Pedal Position"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+
+    - pid: "12 12"
+      name: "Brake Fluid Level"
+      bytes: 1
+      formula: "Bit0"
+      decoding:
+        "0": "OK"
+        "1": "Low"
+
+    - pid: "12 20"
+      name: "Steering Wheel Angle"
+      bytes: 2
+      formula: "signed_int(A,B) / 10"
+      unit: "degrees"
+      note: "Positive = right turn, negative = left turn"
+
+    - pid: "12 21"
+      name: "Lateral Acceleration"
+      bytes: 2
+      formula: "signed_int(A,B) / 100"
+      unit: "g"
+
+    - pid: "12 22"
+      name: "Yaw Rate"
+      bytes: 2
+      formula: "signed_int(A,B) / 100"
+      unit: "°/s"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 13. IPC (Instrument Panel Cluster)
+# ──────────────────────────────────────────────────────────────────────────────
+
+ipc_pids:
+  header: "6C 20 F1"
+  request_prefix: "22"
+  response_prefix: "62"
+  description: "Instrument cluster — gauges, warning lamps, trip data"
+  confidence: unverified
+  sources: [GM-ACDELCO-TDS]
+  source_note: "IPC PID addresses are UNVERIFIED. Need Tech2 confirmation."
+
+  pids:
+    - pid: "14 00"
+      name: "Displayed Vehicle Speed"
+      bytes: 2
+      formula: "(A * 256) + B"
+      unit: "km/h"
+
+    - pid: "14 01"
+      name: "Displayed Engine RPM"
+      bytes: 2
+      formula: "(A * 256) + B"
+      unit: "RPM"
+      note: "This is what the tach needle shows, may have filtering/damping."
+
+    - pid: "14 10"
+      name: "Warning Lamp Status"
+      bytes: 2
+      type: "Bitmask"
+      decoding:
+        bit0: "MIL (Check Engine)"
+        bit1: "Oil pressure warning"
+        bit2: "Coolant temperature warning"
+        bit3: "Battery/charging"
+        bit4: "ABS"
+        bit5: "Airbag"
+        bit6: "Security"
+        bit7: "Reduced power"
+        bit8: "Transmission temp"
+        bit9: "Water in fuel"
+        bit10: "Glow plug / wait to start"
+        bit11: "Cruise control indicator"
+
+    - pid: "14 20"
+      name: "Fuel Level (displayed)"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+
+    - pid: "14 21"
+      name: "Oil Life Remaining"
+      bytes: 1
+      formula: "(A * 100) / 255"
+      unit: "%"
+      range: { fresh: "90-100", change_soon: "10-20", change_now: "0" }
+
+    - pid: "14 30"
+      name: "Trip Odometer"
+      bytes: 4
+      formula: "((A * 16777216) + (B * 65536) + (C * 256) + D) / 10"
+      unit: "km"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 14. ECM DTC LIBRARY (Duramax LLY Specific)
+# ──────────────────────────────────────────────────────────────────────────────
+
+ecm_dtc_library:
+  node: "0x10"
+  description: "ECM DTCs for Bosch E60 / Duramax LLY. Retrieved via Mode 03, 07, 0A, or Mode 19."
+  confidence: verified
+  sources: [SAE-J2012, GM-ACDELCO-TDS, GM-TSB-LLY, OFI-DMAX-DIAG]
+  source_note: "Generic P0xxx codes are defined by SAE J2012. GM-specific codes (P1xxx, upper P2xxx) from ACDelco TDS. Severity ratings and diagnostic notes from community experience."
+
+  fuel_system:
+    - { id: "P0087", meaning: "Fuel Rail/System Pressure Too Low", severity: "critical", note: "CP3 pump failure, fuel filter, air in lines, injector return leak" }
+    - { id: "P0088", meaning: "Fuel Rail/System Pressure Too High", severity: "high", note: "FRP regulator stuck or sensor fault" }
+    - { id: "P0089", meaning: "Fuel Pressure Regulator Performance", severity: "high" }
+    - { id: "P0093", meaning: "Fuel System Leak Detected (Large)", severity: "critical", note: "Injector return line leak or cracked high-pressure line — DO NOT RUN ENGINE" }
+    - { id: "P0094", meaning: "Fuel System Leak Detected (Small)", severity: "high" }
+    - { id: "P0191", meaning: "Fuel Rail Pressure Sensor Circuit Range/Performance", severity: "medium" }
+    - { id: "P0192", meaning: "Fuel Rail Pressure Sensor Circuit Low", severity: "high" }
+    - { id: "P0193", meaning: "Fuel Rail Pressure Sensor Circuit High", severity: "high" }
+    - { id: "P0251", meaning: "Injection Pump Fuel Metering Control A (Malfunction)", severity: "high" }
+    - { id: "P1093", meaning: "Fuel Rail Pressure Low During Power Enrichment", severity: "critical", note: "Cannot maintain rail pressure under load — CP3 pump, filter, or injector leak-back" }
+    - { id: "P1094", meaning: "Fuel Rail Pressure Low During Idle", severity: "high" }
+
+  injector_circuits:
+    note: "CHECK FICM 48V OUTPUT FIRST before replacing injectors. 90% of injector circuit codes are FICM failures, not injectors."
+    codes:
+      - { id: "P0201", meaning: "Injector Circuit Cyl 1 (Open/Short)", severity: "high" }
+      - { id: "P0202", meaning: "Injector Circuit Cyl 2 (Open/Short)", severity: "high" }
+      - { id: "P0203", meaning: "Injector Circuit Cyl 3 (Open/Short)", severity: "high" }
+      - { id: "P0204", meaning: "Injector Circuit Cyl 4 (Open/Short)", severity: "high" }
+      - { id: "P0205", meaning: "Injector Circuit Cyl 5 (Open/Short)", severity: "high" }
+      - { id: "P0206", meaning: "Injector Circuit Cyl 6 (Open/Short)", severity: "high" }
+      - { id: "P0207", meaning: "Injector Circuit Cyl 7 (Open/Short)", severity: "high" }
+      - { id: "P0208", meaning: "Injector Circuit Cyl 8 (Open/Short)", severity: "high" }
+      - { id: "P0263", meaning: "Cyl 1 Contribution/Balance", severity: "medium" }
+      - { id: "P0266", meaning: "Cyl 2 Contribution/Balance", severity: "medium" }
+      - { id: "P0269", meaning: "Cyl 3 Contribution/Balance", severity: "medium" }
+      - { id: "P0272", meaning: "Cyl 4 Contribution/Balance", severity: "medium" }
+      - { id: "P0275", meaning: "Cyl 5 Contribution/Balance", severity: "medium" }
+      - { id: "P0278", meaning: "Cyl 6 Contribution/Balance", severity: "medium" }
+      - { id: "P0281", meaning: "Cyl 7 Contribution/Balance", severity: "medium" }
+      - { id: "P0284", meaning: "Cyl 8 Contribution/Balance", severity: "medium" }
+
+  ficm_codes:
+    - { id: "P0611", meaning: "Fuel Injection Control Module Performance", severity: "critical", note: "FICM internal failure — 48V circuit degraded" }
+    - { id: "P2146", meaning: "Fuel Injector Group A Supply Voltage Circuit", severity: "critical", note: "FICM left-bank driver failure" }
+    - { id: "P2149", meaning: "Fuel Injector Group B Supply Voltage Circuit", severity: "critical", note: "FICM right-bank driver failure" }
+
+  sensors_air_intake:
+    - { id: "P0100", meaning: "MAF/VAF Circuit Malfunction", severity: "medium" }
+    - { id: "P0101", meaning: "MAF/VAF Circuit Range/Performance", severity: "medium" }
+    - { id: "P0102", meaning: "MAF/VAF Circuit Low Input", severity: "medium" }
+    - { id: "P0103", meaning: "MAF/VAF Circuit High Input", severity: "medium" }
+    - { id: "P0106", meaning: "MAP/Barometric Pressure Circuit Range/Performance", severity: "medium" }
+    - { id: "P0107", meaning: "MAP/Barometric Pressure Circuit Low Input", severity: "medium" }
+    - { id: "P0108", meaning: "MAP/Barometric Pressure Circuit High Input", severity: "medium" }
+    - { id: "P0110", meaning: "Intake Air Temperature Sensor 1 Circuit", severity: "low" }
+    - { id: "P0112", meaning: "Intake Air Temperature Sensor 1 Circuit Low", severity: "low" }
+    - { id: "P0113", meaning: "Intake Air Temperature Sensor 1 Circuit High", severity: "low" }
+
+  coolant_temp:
+    - { id: "P0115", meaning: "Engine Coolant Temperature Circuit", severity: "medium" }
+    - { id: "P0117", meaning: "Engine Coolant Temperature Circuit Low", severity: "medium" }
+    - { id: "P0118", meaning: "Engine Coolant Temperature Circuit High", severity: "medium" }
+    - { id: "P0119", meaning: "Engine Coolant Temperature Circuit Intermittent", severity: "medium" }
+
+  turbo_boost:
+    - { id: "P0234", meaning: "Turbo/Supercharger Overboost Condition", severity: "critical", note: "VGT vanes stuck closed — reduced power mode. LLY-specific failure." }
+    - { id: "P0235", meaning: "Turbo/Supercharger Boost Sensor A Circuit", severity: "high" }
+    - { id: "P0237", meaning: "Turbo/Supercharger Boost Sensor A Circuit Low", severity: "high" }
+    - { id: "P0238", meaning: "Turbo/Supercharger Boost Sensor A Circuit High", severity: "high" }
+    - { id: "P0299", meaning: "Turbo/Supercharger Underboost", severity: "high", note: "VGT vanes stuck open, boost leak, or intercooler hose blown off" }
+    - { id: "P2563", meaning: "Turbo Boost Control Position Sensor Circuit", severity: "high" }
+    - { id: "P2564", meaning: "Turbo Boost Control Position Sensor Circuit Range/Performance", severity: "high" }
+
+  egr_system:
+    - { id: "P0401", meaning: "EGR Flow Insufficient", severity: "medium", note: "Clogged EGR valve or passage. Common on LLY — carbon buildup." }
+    - { id: "P0402", meaning: "EGR Flow Excessive", severity: "medium" }
+    - { id: "P0404", meaning: "EGR System Range/Performance", severity: "medium" }
+    - { id: "P0405", meaning: "EGR Position Sensor Circuit Low", severity: "medium" }
+    - { id: "P0406", meaning: "EGR Position Sensor Circuit High", severity: "medium" }
+
+  crankshaft_camshaft:
+    - { id: "P0335", meaning: "Crankshaft Position Sensor A Circuit", severity: "critical", note: "No-start condition. Common failure on LLY." }
+    - { id: "P0336", meaning: "Crankshaft Position Sensor A Circuit Range/Performance", severity: "high" }
+    - { id: "P0340", meaning: "Camshaft Position Sensor A Circuit (Bank 1)", severity: "high" }
+    - { id: "P0341", meaning: "Camshaft Position Sensor A Circuit Range/Performance", severity: "high" }
+    - { id: "P0345", meaning: "Camshaft Position Sensor A Circuit (Bank 2)", severity: "high" }
+
+  glow_plugs:
+    - { id: "P0380", meaning: "Glow Plug/Heater Circuit A Malfunction", severity: "medium" }
+    - { id: "P0381", meaning: "Glow Plug/Heater Indicator Circuit", severity: "low" }
+    - { id: "P0382", meaning: "Glow Plug/Heater Circuit B Malfunction", severity: "medium" }
+    - { id: "P0670", meaning: "Glow Plug Module Control Circuit", severity: "medium" }
+    - { id: "P0671", meaning: "Glow Plug Circuit Cyl 1", severity: "low" }
+    - { id: "P0672", meaning: "Glow Plug Circuit Cyl 2", severity: "low" }
+    - { id: "P0673", meaning: "Glow Plug Circuit Cyl 3", severity: "low" }
+    - { id: "P0674", meaning: "Glow Plug Circuit Cyl 4", severity: "low" }
+    - { id: "P0675", meaning: "Glow Plug Circuit Cyl 5", severity: "low" }
+    - { id: "P0676", meaning: "Glow Plug Circuit Cyl 6", severity: "low" }
+    - { id: "P0677", meaning: "Glow Plug Circuit Cyl 7", severity: "low" }
+    - { id: "P0678", meaning: "Glow Plug Circuit Cyl 8", severity: "low" }
+
+  accelerator_pedal:
+    - { id: "P1516", meaning: "TAC Module Throttle Actuator Position Performance", severity: "high" }
+    - { id: "P2120", meaning: "Throttle/Pedal Position Sensor D Circuit", severity: "critical", note: "APP sensor 1 fault — reduced power mode" }
+    - { id: "P2121", meaning: "Throttle/Pedal Position Sensor D Circuit Range/Performance", severity: "high" }
+    - { id: "P2122", meaning: "Throttle/Pedal Position Sensor D Circuit Low", severity: "high" }
+    - { id: "P2123", meaning: "Throttle/Pedal Position Sensor D Circuit High", severity: "high" }
+    - { id: "P2125", meaning: "Throttle/Pedal Position Sensor E Circuit", severity: "critical", note: "APP sensor 2 fault" }
+    - { id: "P2127", meaning: "Throttle/Pedal Position Sensor E Circuit Low", severity: "high" }
+    - { id: "P2128", meaning: "Throttle/Pedal Position Sensor E Circuit High", severity: "high" }
+    - { id: "P2138", meaning: "Throttle/Pedal Position Sensor D/E Voltage Correlation", severity: "critical", note: "Both APP sensors disagree — forced idle / no throttle response" }
+
+  electrical_system:
+    - { id: "P0500", meaning: "Vehicle Speed Sensor A Malfunction", severity: "medium" }
+    - { id: "P0503", meaning: "Vehicle Speed Sensor Intermittent/Erratic/High", severity: "medium" }
+    - { id: "P0540", meaning: "Intake Air Heater A Circuit", severity: "low" }
+    - { id: "P0562", meaning: "System Voltage Low", severity: "medium", note: "Battery or alternator issue" }
+    - { id: "P0563", meaning: "System Voltage High", severity: "medium", note: "Overcharging — voltage regulator fault" }
+    - { id: "P0602", meaning: "Control Module Programming Error", severity: "critical", note: "ECM needs reflash" }
+    - { id: "P0604", meaning: "Internal Control Module RAM Error", severity: "critical" }
+    - { id: "P0606", meaning: "ECM/PCM Processor Fault", severity: "critical", note: "ECM internal failure — replace module" }
+    - { id: "P0615", meaning: "Starter Relay Circuit", severity: "medium" }
+
+  intake_air_shutoff:
+    note: "LLY uses an intake air shutoff valve (not a traditional throttle body). These codes indicate the valve is sticking."
+    codes:
+      - { id: "P1111", meaning: "Intake Air System Control — Off Performance", severity: "medium" }
+      - { id: "P1112", meaning: "Intake Air System Control — On Performance", severity: "medium" }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 15. TCM DTC LIBRARY (Allison 1000 Specific)
+# ──────────────────────────────────────────────────────────────────────────────
+
+tcm_dtc_library:
+  node: "0x18"
+  description: "Transmission DTCs for Allison 1000 (Gen 3/4). Query TCM directly with AT SH 6C 18 F1 → 03"
+  confidence: verified
+  sources: [SAE-J2012, ALLISON-TS3977EN, ALLISON-DTC-LIST, GM-ACDELCO-TDS]
+  p0700_note: "P0700 appears in the ECM but is only a flag that the TCM has a code. Always query TCM node 0x18 for the real DTC."
+
+  temperature_sensors:
+    - { id: "P0711", meaning: "TFT Sensor Range/Performance", severity: "medium" }
+    - { id: "P0712", meaning: "TFT Sensor Circuit Low Input", severity: "medium" }
+    - { id: "P0713", meaning: "TFT Sensor Circuit High Input", severity: "medium" }
+    - { id: "P2740", meaning: "TFT Sensor B Circuit", severity: "medium", note: "Secondary TFT sensor on later Gen 4 TCMs" }
+
+  speed_sensors:
+    - { id: "P0716", meaning: "Turbine Shaft Speed Sensor Circuit Range/Performance", severity: "high" }
+    - { id: "P0717", meaning: "Turbine Shaft Speed Sensor Circuit No Signal", severity: "critical" }
+    - { id: "P0721", meaning: "Output Speed Sensor Range/Performance", severity: "high" }
+    - { id: "P0722", meaning: "Output Speed Sensor No Signal", severity: "critical" }
+    - { id: "P0726", meaning: "Engine Speed Input Circuit Range/Performance", severity: "high" }
+    - { id: "P0727", meaning: "Engine Speed Input Circuit No Signal", severity: "high", note: "TCM not receiving RPM from ECM — J1939 bus fault" }
+
+  gear_ratio:
+    - { id: "P0731", meaning: "Gear 1 Incorrect Ratio", severity: "critical", note: "Clutch slip in 1st gear. C1 or C5 clutch pack failure." }
+    - { id: "P0732", meaning: "Gear 2 Incorrect Ratio", severity: "critical", note: "Clutch slip in 2nd gear. C2 clutch pack failure." }
+    - { id: "P0733", meaning: "Gear 3 Incorrect Ratio", severity: "critical", note: "Clutch slip in 3rd gear. C3 clutch pack failure." }
+    - { id: "P0734", meaning: "Gear 4 Incorrect Ratio", severity: "critical", note: "Clutch slip in 4th gear. C4 clutch pack failure." }
+    - { id: "P0735", meaning: "Gear 5 Incorrect Ratio", severity: "critical", note: "Clutch slip in 5th gear. C5 clutch pack failure." }
+    - { id: "P0736", meaning: "Reverse Incorrect Ratio", severity: "critical" }
+
+  torque_converter:
+    - { id: "P0741", meaning: "TCC System — Stuck Off", severity: "high", note: "TCC not locking — solenoid, valve body, or worn friction plate" }
+    - { id: "P0742", meaning: "TCC System — Stuck On", severity: "high", note: "TCC won't release — engine stalls at stop signs" }
+    - { id: "P0743", meaning: "TCC System — Electrical", severity: "high" }
+    - { id: "P0744", meaning: "TCC System — Intermittent", severity: "medium" }
+
+  shift_solenoids:
+    - { id: "P0751", meaning: "Shift Solenoid A Performance/Stuck Off", severity: "high" }
+    - { id: "P0752", meaning: "Shift Solenoid A Stuck On", severity: "high" }
+    - { id: "P0753", meaning: "Shift Solenoid A Electrical", severity: "high" }
+    - { id: "P0756", meaning: "Shift Solenoid B Performance/Stuck Off", severity: "high" }
+    - { id: "P0757", meaning: "Shift Solenoid B Stuck On", severity: "high" }
+    - { id: "P0758", meaning: "Shift Solenoid B Electrical", severity: "high" }
+    - { id: "P0761", meaning: "Shift Solenoid C Performance/Stuck Off", severity: "high" }
+    - { id: "P0762", meaning: "Shift Solenoid C Stuck On", severity: "high" }
+    - { id: "P0763", meaning: "Shift Solenoid C Electrical", severity: "high" }
+    - { id: "P0766", meaning: "Shift Solenoid D Performance/Stuck Off", severity: "high" }
+    - { id: "P0767", meaning: "Shift Solenoid D Stuck On", severity: "high" }
+    - { id: "P0768", meaning: "Shift Solenoid D Electrical", severity: "high" }
+    - { id: "P0771", meaning: "Shift Solenoid E Performance/Stuck Off", severity: "high" }
+    - { id: "P0772", meaning: "Shift Solenoid E Stuck On", severity: "high" }
+    - { id: "P0773", meaning: "Shift Solenoid E Electrical", severity: "high" }
+
+  pressure_switches:
+    - { id: "P0841", meaning: "Trans Fluid Pressure Switch 1 — Circuit Range/Performance", severity: "medium" }
+    - { id: "P0842", meaning: "Trans Fluid Pressure Switch 1 — Circuit Low", severity: "medium" }
+    - { id: "P0843", meaning: "Trans Fluid Pressure Switch 1 — Circuit High", severity: "medium" }
+    - { id: "P0845", meaning: "Trans Fluid Pressure Switch 2 — Circuit", severity: "medium" }
+    - { id: "P0846", meaning: "Trans Fluid Pressure Switch 2 — Circuit Range/Performance", severity: "medium" }
+    - { id: "P0870", meaning: "Trans Fluid Pressure Switch 3 — Circuit", severity: "medium" }
+    - { id: "P0871", meaning: "Trans Fluid Pressure Switch 3 — Circuit Range/Performance", severity: "medium" }
+
+  pressure_control:
+    - { id: "P0748", meaning: "Pressure Control Solenoid Electrical", severity: "critical", note: "Main PCS failure — loss of line pressure control" }
+    - { id: "P0962", meaning: "Pressure Control Solenoid A Control Circuit Low", severity: "high" }
+    - { id: "P0963", meaning: "Pressure Control Solenoid A Control Circuit High", severity: "high" }
+    - { id: "P0966", meaning: "Pressure Control Solenoid B Control Circuit Low", severity: "high" }
+
+  internal_mode_switch:
+    - { id: "P0810", meaning: "Transmission Fluid Pressure Manual Valve Position Switch", severity: "high" }
+    - { id: "P1810", meaning: "TFP Manual Valve Position Switch — Circuit", severity: "critical", note: "Internal mode switch failure — TCM cannot determine gear range. Common failure on Allison." }
+    - { id: "P1818", meaning: "TFP Manual Valve Position Switch — Performance", severity: "high" }
+
+  clutch_adaptives:
+    - { id: "P2669", meaning: "Clutch C1 Adaptive Learning at Limit", severity: "medium", note: "C1 pack worn — adaptive fill time maxed out" }
+    - { id: "P2670", meaning: "Clutch C2 Adaptive Learning at Limit", severity: "medium" }
+    - { id: "P2671", meaning: "Clutch C3 Adaptive Learning at Limit", severity: "medium" }
+    - { id: "P2672", meaning: "Clutch C4 Adaptive Learning at Limit", severity: "medium" }
+    - { id: "P2673", meaning: "Clutch C5 Adaptive Learning at Limit", severity: "medium" }
+
+  tcc_specific:
+    - { id: "P1860", meaning: "TCC PWM Solenoid Electrical", severity: "high" }
+    - { id: "P2789", meaning: "Clutch Adaptive Learning at Limit (TCC)", severity: "medium" }
+
+  communication:
+    - { id: "P0700", meaning: "Transmission Control System Malfunction (ECM flag only)", severity: "info", note: "NOT a real fault — just ECM reporting that TCM has a DTC. Query TCM directly." }
+    - { id: "P1779", meaning: "Torque Delivered Signal Fault", severity: "high", note: "J1939 communication issue between ECM and TCM" }
+    - { id: "P0894", meaning: "Transmission Component Slipping", severity: "critical" }
+
+  misc:
+    - { id: "P0714", meaning: "TFT Sensor Circuit Intermittent", severity: "low" }
+    - { id: "P0960", meaning: "Pressure Control Solenoid A Control Circuit Open", severity: "high" }
+    - { id: "P2714", meaning: "Pressure Control Solenoid D Performance/Stuck Off", severity: "high" }
+    - { id: "P2723", meaning: "Pressure Control Solenoid E Performance/Stuck Off", severity: "high" }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 16. NETWORK COMMUNICATION DTCs (U-Codes)
+# ──────────────────────────────────────────────────────────────────────────────
+
+network_dtc_library:
+  description: "Communication fault codes — indicate lost messages between modules on J1850 VPW bus"
+  confidence: verified
+  sources: [SAE-J2012, GM-ACDELCO-TDS]
+  codes:
+    - { id: "U0001", meaning: "High Speed CAN Communication Bus", severity: "critical", note: "CAN bus fault (internal powertrain bus, not OBD-II DLC)" }
+    - { id: "U0073", meaning: "Control Module Communication Bus Off", severity: "critical", note: "J1850 bus failure — module isolated from network" }
+    - { id: "U0100", meaning: "Lost Communication with ECM/PCM", severity: "critical" }
+    - { id: "U0101", meaning: "Lost Communication with TCM", severity: "critical" }
+    - { id: "U0103", meaning: "Lost Communication with Gear Shift Module", severity: "medium" }
+    - { id: "U0121", meaning: "Lost Communication with ABS Module", severity: "high" }
+    - { id: "U0140", meaning: "Lost Communication with BCM", severity: "high" }
+    - { id: "U0151", meaning: "Lost Communication with SIR Module", severity: "high" }
+    - { id: "U0155", meaning: "Lost Communication with IPC", severity: "medium" }
+    - { id: "U0168", meaning: "Lost Communication with VCIM (OnStar)", severity: "low" }
+    - { id: "U0184", meaning: "Lost Communication with Radio", severity: "low" }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 17. DTC DECODING FORMAT
+# ──────────────────────────────────────────────────────────────────────────────
+
+dtc_decoding:
+  description: "How to decode the 2-byte DTC value from Mode 03/07/0A responses"
+  format:
+    byte_1_bits_7_6:
+      "00": "P (Powertrain)"
+      "01": "C (Chassis)"
+      "10": "B (Body)"
+      "11": "U (Network)"
+    byte_1_bits_5_4: "Second character (0-3)"
+    byte_1_bits_3_0: "Third character (0-F hex)"
+    byte_2_bits_7_4: "Fourth character (0-F hex)"
+    byte_2_bits_3_0: "Fifth character (0-F hex)"
+  example:
+    raw_bytes: "01 33"
+    binary: "00000001 00110011"
+    decoded: "P0133"
+    meaning: "O2 Sensor Circuit Slow Response (Bank 1, Sensor 1)"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 18. READINESS MONITOR STATUS (Diesel-Specific)
+# ──────────────────────────────────────────────────────────────────────────────
+
+readiness_monitors:
+  description: "OBD-II readiness monitors for diesel/compression ignition. Mode 01 PID 01."
+  monitors:
+    continuous:
+      - { name: "Misfire", bit: "B0.0", note: "Always runs when engine is on" }
+      - { name: "Fuel System", bit: "B0.1", note: "Monitors rail pressure regulation" }
+      - { name: "Components", bit: "B0.2", note: "Sensor rationality checks" }
+    non_continuous:
+      - { name: "EGR/VVT System", bit: "B2.0", drive_cycle: "Requires highway + idle transitions" }
+      - { name: "Boost Pressure", bit: "B2.1", drive_cycle: "Requires moderate acceleration under load" }
+      - { name: "Exhaust Gas Sensor", bit: "B2.2", note: "N/A on LLY (no NOx sensor)" }
+      - { name: "PM Filter", bit: "B2.3", note: "N/A on LLY (no DPF)" }
+  drive_cycle:
+    description: "Minimum drive cycle to set all LLY readiness monitors"
+    steps:
+      - "Cold start (coolant < 50°C, ideally < 30°C)"
+      - "Idle for 2 minutes (glow plugs, component checks)"
+      - "Steady cruise at 50-70 km/h for 5 minutes (fuel system, boost)"
+      - "3-4 moderate accelerations from 30 to 90 km/h (EGR, boost monitor)"
+      - "Highway cruise at 100 km/h for 5 minutes"
+      - "Deceleration (foot off throttle) to 40 km/h, 3 times"
+      - "Idle for 30 seconds"
+      - "Total: ~20-30 minutes minimum"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 19. PID POLLING GROUPS (Recommended scan sequences)
+# ──────────────────────────────────────────────────────────────────────────────
+
+polling_groups:
+  description: "Recommended PID groups for different diagnostic scenarios. Polling fewer PIDs = faster update rate."
+
+  dashboard_essentials:
+    description: "Minimum PIDs for a real-time dashboard display"
+    header: "68 6A F1"
+    poll_rate_target_ms: 200
+    pids:
+      - { service: "01", pid: "0C", name: "Engine RPM" }
+      - { service: "01", pid: "0D", name: "Vehicle Speed" }
+      - { service: "01", pid: "05", name: "Coolant Temp" }
+      - { service: "01", pid: "0B", name: "MAP (Boost)" }
+      - { service: "01", pid: "04", name: "Engine Load" }
+      - { service: "01", pid: "5E", name: "Fuel Rate" }
+
+  engine_health:
+    description: "Full engine health assessment"
+    steps:
+      - header: "68 6A F1"
+        pids:
+          - { service: "01", pid: "0C", name: "RPM" }
+          - { service: "01", pid: "05", name: "Coolant Temp" }
+          - { service: "01", pid: "5C", name: "Oil Temp" }
+          - { service: "01", pid: "42", name: "Battery Voltage" }
+          - { service: "01", pid: "0B", name: "MAP" }
+          - { service: "01", pid: "10", name: "MAF" }
+          - { service: "01", pid: "2C", name: "Commanded EGR" }
+      - header: "6C 10 F1"
+        pids:
+          - { service: "22", pid: "11 70", name: "Fuel Rail Pressure Actual" }
+          - { service: "22", pid: "11 71", name: "Fuel Rail Pressure Desired" }
+          - { service: "22", pid: "11 74", name: "Fuel Temperature" }
+          - { service: "22", pid: "11 50", name: "Oil Pressure" }
+          - { service: "22", pid: "11 9B", name: "VGT Position Actual" }
+          - { service: "22", pid: "11 91", name: "VGT Position Desired" }
+          - { service: "22", pid: "11 16", name: "Boost Pressure Actual" }
+          - { service: "22", pid: "19 86-8D", name: "Injector Balance Rates (all 8)" }
+
+  transmission_health:
+    description: "Allison 1000 health assessment"
+    header: "6C 18 F1"
+    pids:
+      - { service: "22", pid: "19 40", name: "TFT" }
+      - { service: "22", pid: "19 41", name: "Turbine Speed" }
+      - { service: "22", pid: "19 42", name: "Output Speed" }
+      - { service: "22", pid: "19 43", name: "TCC Slip" }
+      - { service: "22", pid: "19 48", name: "Current Gear" }
+      - { service: "22", pid: "19 4A", name: "Gear Ratio" }
+      - { service: "22", pid: "19 50", name: "Line Pressure Actual" }
+      - { service: "22", pid: "19 62", name: "TCC Duty Cycle" }
+      - { service: "22", pid: "19 46-55", name: "Clutch Volume Indices (C1-C5)" }
+      - { service: "22", pid: "19 91", name: "Solenoid State" }
+
+  turbo_diagnostics:
+    description: "VGT turbo health check — for diagnosing the #1 LLY failure"
+    header: "6C 10 F1"
+    pids:
+      - { service: "22", pid: "11 9B", name: "VGT Position Actual" }
+      - { service: "22", pid: "11 91", name: "VGT Position Desired" }
+      - { service: "22", pid: "11 9C", name: "VGT Position Error" }
+      - { service: "22", pid: "11 15", name: "VGT Duty Cycle" }
+      - { service: "22", pid: "11 16", name: "Boost Pressure Actual" }
+      - { service: "22", pid: "11 17", name: "Boost Pressure Desired" }
+      - { service: "22", pid: "11 19", name: "Charge Air Cooler Outlet Temp" }
+    diagnostic_procedure:
+      - "Engine warm (coolant > 80°C), idle in Park"
+      - "Monitor VGT Position Error — should be < ±5% at idle"
+      - "Rev to 2000 RPM and hold 5 seconds"
+      - "VGT should move from ~50% to ~20% smoothly"
+      - "Error spike > 15% during transition = vane sticking"
+      - "If vanes stick, check for soot in unison ring (requires turbo removal)"
+
+  full_dtc_scan:
+    description: "Complete DTC retrieval from all modules"
+    sequence:
+      - { step: 1, header: "68 6A F1", request: "03", target: "All modules (broadcast) — stored DTCs" }
+      - { step: 2, header: "68 6A F1", request: "07", target: "All modules (broadcast) — pending DTCs" }
+      - { step: 3, header: "68 6A F1", request: "0A", target: "All modules (broadcast) — permanent DTCs" }
+      - { step: 4, header: "6C 10 F1", request: "03", target: "ECM only — engine DTCs" }
+      - { step: 5, header: "6C 18 F1", request: "03", target: "TCM only — true transmission DTCs" }
+      - { step: 6, header: "6C 40 F1", request: "03", target: "BCM — body DTCs" }
+      - { step: 7, header: "6C 28 F1", request: "03", target: "ABS — brake DTCs" }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 20. KNOWN PLATFORM ISSUES & DIAGNOSTIC WISDOM
+# ──────────────────────────────────────────────────────────────────────────────
+
+known_issues:
+  description: "Common LLY failure modes and diagnostic shortcuts"
+  confidence: community
+  sources: [GM-TSB-LLY, OFI-DMAX-DIAG, DMAX-BALANCE-RATES-PISTONTWISTIN, DMAX-BALANCE-RATES-INJECTORSDIRECT]
+
+  turbo_vane_sticking:
+    rank: 1
+    symptoms: ["P0234", "P0299", "Reduced Engine Power", "Black smoke at WOT", "Sluggish acceleration"]
+    root_cause: "Carbon/soot buildup in VGT unison ring restricts vane movement"
+    quick_test: "Monitor VGT Position Error (22 11 9C). Error > 10% under load = sticking."
+    fix: "Remove turbo, clean/replace unison ring. Upgraded stainless ring available aftermarket."
+
+  ficm_failure:
+    rank: 2
+    symptoms: ["P0201-P0208", "P0611", "P2146", "P2149", "Hard start", "Rough idle", "Missing at cold start"]
+    root_cause: "Internal capacitor bank failure in FICM — 48V drops below threshold"
+    quick_test: "Monitor FICM voltage (22 11 00 at node 0x11, or bench test at C1-15/C1-1). <47V = marginal, <45V = failed."
+    fix: "Replace FICM or send for rebuild (Alliant Power, Dorman). Aftermarket upgraded FICMs available."
+
+  injector_failure:
+    rank: 3
+    symptoms: ["Balance rate > ±4 mm3", "White smoke at cold start", "Excessive fuel consumption", "Rough idle"]
+    root_cause: "Injector nozzle wear or internal seal failure"
+    quick_test: "Read balance rates (22 19 86-8D at node 0x10) at warm idle. Values > ±4 = failing injector."
+    fix: "Replace individual injectors. LLY uses Bosch CRIN2 — verify FICM is good first."
+    warning: "ALWAYS verify FICM 48V before condemning injectors. Low FICM voltage mimics bad injectors."
+
+  head_gasket:
+    rank: 4
+    symptoms: ["Coolant loss without external leak", "White exhaust (coolant steam)", "Coolant in oil", "Overheating"]
+    root_cause: "Head gasket failure between cylinder and coolant passage. LLY head bolts stretch — TTY design."
+    quick_test: "Watch coolant temp (01 05) for rapid spikes under load. Check oil for milky appearance."
+    fix: "Head gasket replacement. Upgraded ARP head studs strongly recommended."
+
+  egr_cooler:
+    rank: 5
+    symptoms: ["P0401", "White smoke at idle", "Coolant loss into intake", "Rough idle"]
+    root_cause: "EGR cooler internal rupture — exhaust pressure pushes coolant into intake"
+    quick_test: "Remove intake pipe and look for coolant pooling. Monitor EGR position error (22 11 97)."
+    fix: "Replace EGR cooler. Many owners delete EGR (not emissions legal in all states)."
+
+  water_in_fuel_sensor:
+    rank: 6
+    symptoms: ["Water in Fuel warning lamp", "P0169 (Water in Fuel)"]
+    root_cause: "Sensor in fuel filter housing triggers on water contamination OR sensor failure"
+    quick_test: "Drain fuel filter water separator. If warning persists after drain = bad sensor."
+    fix: "Drain water separator. Replace sensor if faulty. Always use good fuel filters."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 21. OPERATING THRESHOLDS & LIMITS
+# ──────────────────────────────────────────────────────────────────────────────
+
+thresholds:
+  description: "Engine-family-specific operating ranges for the LLY Duramax"
+  confidence: community
+  sources: [GM-ACDELCO-TDS, DMAX-BALANCE-RATES-PISTONTWISTIN, OFI-DMAX-DIAG]
+  source_note: "Threshold values derived from GM service specs where available, community experience otherwise. Verify critical thresholds against ACDelco TDS."
+  engine_family: "LLY"
+
+  engine:
+    rpm:
+      idle_warm: { min: 650, max: 720 }
+      idle_cold: { min: 750, max: 820 }
+      max_rpm: 3400
+      warning: 3100
+      critical: 3300
+
+    coolant_temp_c:
+      cold_start: { min: -40, max: 20 }
+      thermostat_open: 88
+      operating: { min: 85, max: 100 }
+      warning: 105
+      critical: 115
+
+    oil_temp_c:
+      operating: { min: 90, max: 120 }
+      warning: 130
+      critical: 145
+
+    oil_pressure_kpa:
+      idle_warm: { min: 140, max: 280 }
+      driving: { min: 280, max: 550 }
+      warning_low: 100
+      critical_low: 70
+
+    fuel_rail_pressure_kpa:
+      idle: { min: 25000, max: 35000 }
+      full_load: { min: 130000, max: 160000 }
+      warning_low: 20000
+      critical_low: 15000
+
+    fuel_temp_c:
+      operating: { min: 20, max: 70 }
+      warning: 80
+      critical: 90
+
+    boost_pressure_kpa_gauge:
+      max_stock: 165        # ~24 PSI
+      warning: 172           # ~25 PSI
+      critical: 200          # ~29 PSI (overboost)
+
+    battery_voltage:
+      engine_off: { min: 12.0, max: 12.8 }
+      engine_running: { min: 13.5, max: 14.8 }
+      warning_low: 11.5
+      warning_high: 15.5
+      critical_low: 10.5
+      critical_high: 16.0
+
+    injector_balance_rate_mm3:
+      normal: { min: -2.0, max: 2.0 }
+      marginal: { min: -4.0, max: 4.0 }
+      failing: "beyond ±4.0"
+
+    vgt_position_error_pct:
+      normal: { min: -5.0, max: 5.0 }
+      warning: 8.0
+      critical: 15.0
+
+  transmission:
+    fluid_temp_c:
+      operating: { min: 70, max: 100 }
+      warning: 110
+      critical: 130
+
+    tcc_slip_rpm:
+      locked: { min: -20, max: 20 }
+      warning: 60
+
+    line_pressure_kpa:
+      park_neutral: { min: 400, max: 700 }
+      drive_idle: { min: 600, max: 900 }
+      full_load: { min: 1200, max: 1800 }
+
+    clutch_volume_index:
+      new: { min: 0, max: 30 }
+      worn: { min: 30, max: 60 }
+      failing: 60
+
+    ficm_voltage:
+      target: 48.0
+      warning_low: 47.0
+      critical_low: 45.0

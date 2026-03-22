@@ -1,0 +1,730 @@
+# ==============================================================================
+# MASTER SOURCE REFERENCE: OBD-II Vehicle Specification Data
+# ==============================================================================
+#
+# Purpose: Authoritative, citable sources for building vehicle diagnostic specs.
+#          Every PID, DTC, formula, threshold, and protocol detail in a vehicle
+#          spec MUST be traceable to one or more entries in this file.
+#
+# Usage:
+#   - When creating a new vehicle spec, tag each section with a "sources:" key
+#     listing the source IDs from this file (e.g. sources: [SAE-J1979, GM-ACDELCO-TDS])
+#   - Confidence levels:
+#       verified    = confirmed against manufacturer tool or standards document
+#       community   = multiple independent confirmations from diagnostic community
+#       inferred    = extrapolated from related platform data, needs verification
+#       unverified  = from training data or single source, treat as provisional
+#
+# Organization:
+#   1. Standards Bodies (SAE, ISO) — universal OBD-II definitions
+#   2. Manufacturer Service Information — OEM factory data
+#   3. Manufacturer Diagnostic Tools — software that defines PID/DTC sets
+#   4. Aftermarket Diagnostic Tools — third-party tools with verified PID databases
+#   5. Community-Verified Technical References — forum/blog data cross-checked
+#   6. Protocol & Hardware References — physical layer and adapter documentation
+#   7. Academic & Technical Papers — peer-reviewed or manufacturer whitepapers
+#
+# ==============================================================================
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. STANDARDS BODIES (SAE / ISO)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# These define the universal OBD-II framework: standard PIDs, DTC format,
+# protocol layers, and connector pinouts. Applicable to ALL OBD-II vehicles.
+# ──────────────────────────────────────────────────────────────────────────────
+
+standards:
+
+  - id: SAE-J1979
+    name: "SAE J1979 — E/E Diagnostic Test Modes"
+    iso_equivalent: "ISO 15031-5"
+    scope: "Defines all 10 standard OBD-II service modes (Mode 01-0A), PID definitions, formulas, units, and byte layouts"
+    covers:
+      - "Mode 01: Current powertrain data (standard PIDs 0x00-0x7F)"
+      - "Mode 02: Freeze frame data"
+      - "Mode 03: Stored DTCs"
+      - "Mode 04: Clear DTCs"
+      - "Mode 05: O2 sensor monitoring (gasoline only)"
+      - "Mode 06: On-board monitoring test results"
+      - "Mode 07: Pending DTCs"
+      - "Mode 08: Control of on-board systems"
+      - "Mode 09: Vehicle information (VIN, CALIDs, CVNs)"
+      - "Mode 0A: Permanent DTCs"
+    purchase_url: "https://www.sae.org/standards/content/j1979_201702/"
+    alt_purchase_url: "https://webstore.ansi.org/standards/sae/sae19792012j1979"
+    free_archive_url: "https://archive.org/details/gov.law.sae.j1979.2002"
+    note: "The 2002 version on archive.org covers the core PID set. Later revisions add new PIDs but formulas for existing PIDs are stable."
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: SAE-J1979-DA
+    name: "SAE J1979-DA — Digital Annex (PID Registry)"
+    scope: "Machine-readable spreadsheet of all registered PIDs, OBDMIDs, TIDs, and INFOTYPEs with formulas and units"
+    purchase_url: "https://www.sae.org/standards/content/j1979da_202404/"
+    note: "This is the definitive source for PID formulas. Updated more frequently than J1979 itself."
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: SAE-J2012
+    name: "SAE J2012 — Diagnostic Trouble Code Definitions"
+    iso_equivalent: "ISO 15031-6"
+    scope: "DTC 2-byte encoding format, 5-character structure (Pxxxx/Cxxxx/Bxxxx/Uxxxx), and standardized definitions for generic DTCs"
+    covers:
+      - "DTC byte decoding (bits 15-14 = category, bits 13-12 = second char, etc.)"
+      - "Generic/universal DTC definitions (P0xxx where first digit is 0)"
+      - "Manufacturer-specific DTC ranges (P1xxx, P2xxx upper, P3xxx)"
+    purchase_url: "https://www.sae.org/standards/content/j2012_201612/"
+    free_archive_url: "https://law.resource.org/pub/us/cfr/ibr/005/sae.j2012.2002.pdf"
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: SAE-J2012-DA
+    name: "SAE J2012-DA — Digital Annex (DTC Registry)"
+    scope: "Machine-readable spreadsheet of all registered DTC definitions"
+    purchase_url: "https://www.sae.org/standards/content/j2012da_202404/"
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: SAE-J1850
+    name: "SAE J1850 — Class B Data Communications Network Interface"
+    scope: "Physical and data link layer for J1850 VPW (Variable Pulse Width) and J1850 PWM (Pulse Width Modulation) protocols"
+    covers:
+      - "VPW variant: single-wire, 10.4 kbps, OBD-II pin 2 (GM vehicles 1996-2007)"
+      - "PWM variant: dual-wire, 41.6 kbps, OBD-II pins 2+10 (Ford vehicles 1996-2007)"
+      - "Message format: priority byte, target, source, data (up to 8 bytes), CRC-8"
+      - "Timing parameters (P1-P4, inter-byte, response windows)"
+      - "Voltage levels: VPW high=7.75V, low=3.25V"
+    purchase_url: "https://www.sae.org/standards/content/j1850_202212/"
+    alt_purchase_url: "https://webstore.ansi.org/standards/sae/sae18502015j1850"
+    free_archive_url: "https://law.resource.org/pub/us/cfr/ibr/005/sae.j1850.2001.pdf"
+    confidence: verified
+    applies_to: "gm_pre_2008, ford_pre_2008, chrysler_pre_2008"
+
+  - id: SAE-J2190
+    name: "SAE J2190 — Enhanced E/E Diagnostic Test Modes"
+    scope: "Manufacturer-specific enhanced diagnostic modes including Mode $22 (Read Data By Identifier)"
+    covers:
+      - "Mode $22: Read Data By PID (enhanced/manufacturer-specific PIDs)"
+      - "Mode $2F: Input/Output Control By Identifier (actuator tests)"
+      - "Mode $27: Security Access"
+      - "Mode $10: Diagnostic Session Control"
+      - "Mode $3E: Tester Present"
+      - "Mode $14: Enhanced Clear DTCs"
+      - "Mode $19: Enhanced Read DTC Information"
+    purchase_url: "https://www.sae.org/standards/content/j2190_200810/"
+    alt_url: "https://saemobilus.sae.org/standards/j2190_200810-enhanced-e-e-diagnostic-test-modes"
+    note: "Defines the service framework, NOT the manufacturer-specific PID addresses. Actual PIDs come from OEM documentation."
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: SAE-J1962
+    name: "SAE J1962 — Diagnostic Connector"
+    iso_equivalent: "ISO 15031-3"
+    scope: "Standard 16-pin DLC (Data Link Connector) pin assignments"
+    covers:
+      - "Pin 2: J1850 VPW data (SAE J1850)"
+      - "Pin 4: Chassis ground"
+      - "Pin 5: Signal ground"
+      - "Pin 6: CAN high (ISO 15765)"
+      - "Pin 7: K-line (ISO 9141-2)"
+      - "Pin 10: J1850 PWM negative (SAE J1850)"
+      - "Pin 14: CAN low (ISO 15765)"
+      - "Pin 15: L-line (ISO 9141-2)"
+      - "Pin 16: Battery positive (+12V)"
+    purchase_url: "https://saemobilus.sae.org/standards/j1962_201607-diagnostic-connector"
+    iso_url: "https://www.iso.org/standard/64636.html"
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: SAE-J2284
+    name: "SAE J2284 — High Speed CAN for Vehicle Applications"
+    iso_equivalent: "ISO 11898"
+    scope: "CAN bus physical and data link layer for OBD-II diagnostics (2008+ GM, 2008+ Ford, 2008+ Chrysler)"
+    note: "Not used by LLY Duramax on the OBD-II DLC, but used internally for ECM-TCM communication."
+    confidence: verified
+    applies_to: "can_bus_vehicles"
+
+  - id: ISO-14229
+    name: "ISO 14229 — Unified Diagnostic Services (UDS)"
+    scope: "Modern diagnostic protocol used by CAN-based vehicles (2008+). Supersedes J2190 for newer platforms."
+    covers:
+      - "Service 0x22: Read Data By Identifier"
+      - "Service 0x2E: Write Data By Identifier"
+      - "Service 0x2F: Input/Output Control By Identifier"
+      - "Service 0x19: Read DTC Information (with sub-functions)"
+      - "Service 0x14: Clear Diagnostic Information"
+      - "Service 0x27: Security Access"
+      - "Service 0x10: Diagnostic Session Control"
+      - "Service 0x3E: Tester Present"
+    purchase_url: "https://www.iso.org/standard/72439.html"
+    note: "Pre-CAN GM vehicles (J1850) use a proprietary variant of these services, not full UDS. The service IDs are similar but message framing differs."
+    confidence: verified
+    applies_to: "can_bus_vehicles"
+
+  - id: SAE-J1939
+    name: "SAE J1939 — Serial Control and Communications Heavy Duty Vehicle Network"
+    scope: "CAN-based protocol for heavy-duty vehicles, trucks, and diesel engines"
+    covers:
+      - "PGN (Parameter Group Number) definitions"
+      - "SPN (Suspect Parameter Number) definitions"
+      - "DM messages (Diagnostic Messages 1-14)"
+      - "Torque/speed communication between ECM and TCM"
+    note: "The LLY Duramax uses J1939 internally between ECM and TCM for torque management, but this is not directly accessible via the OBD-II DLC."
+    confidence: verified
+    applies_to: "heavy_duty_diesel, medium_duty_diesel"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. MANUFACTURER SERVICE INFORMATION
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Official OEM service data: factory repair manuals, wiring diagrams,
+# diagnostic procedures, TSBs, and calibration data.
+# ──────────────────────────────────────────────────────────────────────────────
+
+manufacturer_service_info:
+
+  # --- General Motors ---
+  - id: GM-ACDELCO-TDS
+    name: "ACDelco Technical Delivery System (TDS)"
+    manufacturer: "General Motors"
+    url: "https://www.acdelcotds.com/"
+    scope: "Complete GM factory service information — identical to dealership SI"
+    covers:
+      - "Wiring diagrams (all modules, all connectors)"
+      - "Diagnostic procedures (step-by-step troubleshooting trees)"
+      - "PID definitions and expected values for Tech2/MDI scan tools"
+      - "DTC descriptions, conditions for setting/clearing, diagnostic aids"
+      - "Component locations and specifications"
+      - "Technical Service Bulletins (TSBs) back to 1980"
+      - "Calibration information"
+    subscription_pricing:
+      three_day: "$20"
+      one_month: "$150"
+      one_year: "$1,200"
+    note: "THE definitive source for GM vehicle diagnostic data. Every PID address, formula, and DTC definition originates here."
+    confidence: verified
+    applies_to: "all_gm_vehicles"
+    explainer_url: "https://techroute66.com/acdelco-tds/"
+
+  - id: GM-STC
+    name: "GM Service Technical College"
+    manufacturer: "General Motors"
+    url: "https://www.gmstc.com/"
+    scope: "Performance-based technician training used by GM dealerships"
+    covers:
+      - "Duramax diesel operation and common rail diagnosis courses"
+      - "Fuel pressure testing, injector testing, FICM operation"
+      - "Allison transmission diagnostic procedures"
+      - "Electrical/electronic systems training"
+    note: "Training materials complement TDS by explaining WHY systems work the way they do."
+    confidence: verified
+    applies_to: "all_gm_vehicles"
+    training_partner: "https://www.uti.edu/programs/automotive/specialized-training/gm-tech"
+
+  - id: GM-TECHLINK
+    name: "GM TechLink (Technical Bulletins)"
+    manufacturer: "General Motors"
+    url: "https://gm-techlink.com/"
+    scope: "GM-published technical service bulletins, diagnostic tips, and service procedures for aftermarket technicians"
+    note: "Free publication. Covers common diagnostic pitfalls, updated procedures, and field fixes."
+    confidence: verified
+    applies_to: "all_gm_vehicles"
+    example_pdf: "https://gm-techlink.com/wp-content/uploads/2023/02/GM_TechLink_24_Mid-December_2022.pdf"
+
+  - id: GM-TSB-LLY
+    name: "GM Technical Service Bulletins — LLY Duramax Specific"
+    manufacturer: "General Motors"
+    scope: "Field-reported issues and GM-approved repair procedures for LLY platform"
+    bulletins:
+      - { id: "05-06-04-047B", subject: "Injector harness brackets/connectors for Cyl #2 and #7", dtcs: "P0202, P0207, P2146, P2149", note: "Harness chafes against valve cover — high failure rate" }
+      - { id: "09-06-04-034", subject: "FICM wiring harness chafing behind alternator", dtcs: "P0611, P2146, P2149" }
+      - { id: "04-06-04-001C", subject: "Engine controls intermittent driveability conditions", scope: "LB7/LLY/LBZ/LMM" }
+    reference: "https://www.underhoodservice.com/duramax-dilemma-injector-circuit-diagnostics/"
+    note: "Full TSB text available via ACDelco TDS subscription."
+    confidence: verified
+    applies_to: "gm_duramax_lly"
+
+  # --- Ford ---
+  - id: FORD-MOTORCRAFT
+    name: "Ford Motorcraft Service (PTS — Professional Technician Society)"
+    manufacturer: "Ford Motor Company"
+    url: "https://www.motorcraftservice.com/"
+    scope: "Official Ford factory service information"
+    covers:
+      - "Workshop manuals, wiring diagrams, TSBs"
+      - "PID definitions for Ford IDS/FDRS scan tools"
+      - "DTC descriptions and diagnostic procedures"
+      - "Module configuration and programming"
+    subscription_pricing:
+      one_day: "$35"
+      three_day: "$55"
+      one_year: "$500"
+    confidence: verified
+    applies_to: "all_ford_vehicles"
+
+  # --- Chrysler/Stellantis ---
+  - id: STELLANTIS-TECHAUTHORITY
+    name: "Stellantis TechAuthority (formerly DealerCONNECT)"
+    manufacturer: "Stellantis (Chrysler/Dodge/Ram/Jeep)"
+    url: "https://www.techauthority.com/"
+    scope: "Official Stellantis factory service information"
+    covers:
+      - "Service manuals, wiring diagrams, TSBs"
+      - "PID definitions for wiTECH scan tools"
+      - "DTC descriptions and diagnostic procedures"
+    confidence: verified
+    applies_to: "all_stellantis_vehicles"
+
+  # --- Toyota ---
+  - id: TOYOTA-TIS
+    name: "Toyota Technical Information System (TIS)"
+    manufacturer: "Toyota/Lexus"
+    url: "https://techinfo.toyota.com/"
+    scope: "Official Toyota/Lexus factory service information"
+    confidence: verified
+    applies_to: "all_toyota_lexus_vehicles"
+
+  # --- Honda ---
+  - id: HONDA-ISHOP
+    name: "Honda iShop / Service Express"
+    manufacturer: "Honda/Acura"
+    url: "https://www.techinfo.honda.com/"
+    scope: "Official Honda/Acura factory service information"
+    confidence: verified
+    applies_to: "all_honda_acura_vehicles"
+
+  # --- Allison Transmission ---
+  - id: ALLISON-DOC
+    name: "Allison DOC (Diagnostic Optimized Connection)"
+    manufacturer: "Allison Transmission"
+    url: "https://www.allisontransmission.com/aftermarket-and-channel/parts-and-service/service-tools--information/electronic-diagnostics--service-tools"
+    scope: "Official Allison diagnostic software — the only manufacturer-authorized tool for Allison TCM"
+    covers:
+      - "TCM PID definitions and real-time data"
+      - "DTC descriptions, conditions, and diagnostic aids"
+      - "TCM reprogramming and calibration"
+      - "Clutch calibration and adaptive reset"
+    product_flyer: "https://allisontransmission.bynder.com/m/3f2980cb80d6daae/original/DOC-flyer.pdf"
+    versions:
+      doc_classic: "Full functionality for 3rd and 4th Generation controls"
+      doc_premium: "Covers 1000/2000/3000/4000 Series"
+    hardware_compatible: ["NEXIQ USB Link", "Cummins INLINE", "Dearborn DPA5", "Noregon DLA"]
+    confidence: verified
+    applies_to: "allison_1000_2000_3000_4000"
+
+  - id: ALLISON-TS3977EN
+    name: "Allison TS3977EN — Troubleshooting Manual, 4th Generation, 1000 & 2000 Product Families"
+    manufacturer: "Allison Transmission"
+    scope: "Transmission components, electronic control system, diagnostic codes, and troubleshooting procedures"
+    covers:
+      - "TCM hardware description and connector pinouts"
+      - "Solenoid function and gear engagement logic"
+      - "Clutch pack identification (C1-C5) and function"
+      - "Pressure switch manifold diagnostics"
+      - "All Allison-specific DTCs with diagnostic trees"
+      - "Speed sensor descriptions and failure modes"
+    url: "https://www.scribd.com/doc/221071622/ALLISON-TRANSMISSION-TS3977EN-Troubleshooting-Manual-4th-Gen-1000-2000-Prod-Fam"
+    note: "Available on Scribd. Official Allison publication."
+    confidence: verified
+    applies_to: "allison_1000_2000_gen4"
+
+  - id: ALLISON-HUB
+    name: "Allison HUB (Publications Library)"
+    manufacturer: "Allison Transmission"
+    url: "https://allisontransmission.com/aftermarket-and-channel/parts-and-service/allison-hub"
+    scope: "Operator manuals (free), ePubs service manuals (premium)"
+    operators_manual_pdf: "https://rvtechlibrary.com/transmissions/1000_2000_operators.pdf"
+    note: "OM4118EN covers 1000/2000 series operator info. Premium tier required for full service manuals."
+    confidence: verified
+    applies_to: "allison_all_series"
+
+  - id: ALLISON-DTC-LIST
+    name: "Allison Diagnostic Codes Reference (Gen 4)"
+    manufacturer: "Allison Transmission"
+    url: "https://elibrarywcl.wordpress.com/wp-content/uploads/2015/02/diagnosticcodes.pdf"
+    scope: "Complete DTC list for 4th Generation Allison 1000/2000/3000/4000"
+    note: "PDF document listing all Allison DTCs with descriptions."
+    confidence: verified
+    applies_to: "allison_gen4"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. MANUFACTURER DIAGNOSTIC TOOLS
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# OEM and authorized scan tools define the PID sets available for each vehicle.
+# Their PID databases are the ground truth for enhanced diagnostic data.
+# ──────────────────────────────────────────────────────────────────────────────
+
+diagnostic_tools:
+
+  - id: GM-TECH2
+    name: "GM Tech2 Scan Tool"
+    manufacturer: "General Motors / Vetronix / Bosch"
+    scope: "Factory scan tool for GM vehicles 1992-2013"
+    covers:
+      - "All standard and enhanced PIDs for every GM module"
+      - "Bi-directional controls (actuator tests)"
+      - "Module programming and configuration"
+      - "Tech2 PID lists are the definitive source for GM enhanced PID addresses"
+    note: "Discontinued but still the reference standard for pre-CAN GM vehicles. PID databases in Tech2 software define what is queryable."
+    confidence: verified
+    applies_to: "gm_1992_to_2013"
+
+  - id: GM-MDI
+    name: "GM MDI / MDI 2 (Multiple Diagnostic Interface)"
+    manufacturer: "General Motors / Bosch"
+    scope: "Current factory scan tool for GM vehicles (replaced Tech2 for CAN-era vehicles)"
+    note: "For J1850 VPW vehicles like the LLY, MDI can emulate Tech2 functionality via GDS2 software."
+    confidence: verified
+    applies_to: "all_gm_vehicles"
+
+  - id: FORD-IDS-FDRS
+    name: "Ford IDS / FDRS (Integrated Diagnostic System / Ford Diagnostic & Repair System)"
+    manufacturer: "Ford Motor Company"
+    scope: "Factory scan tool for all Ford/Lincoln/Mercury vehicles"
+    confidence: verified
+    applies_to: "all_ford_vehicles"
+
+  - id: HONDA-HDS
+    name: "Honda HDS (Honda Diagnostic System)"
+    manufacturer: "Honda"
+    scope: "Factory scan tool for Honda/Acura vehicles"
+    confidence: verified
+    applies_to: "all_honda_acura_vehicles"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. AFTERMARKET DIAGNOSTIC TOOLS & PID DATABASES
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Third-party tools that have reverse-engineered or licensed enhanced PID data.
+# Useful for cross-referencing but NOT as authoritative as OEM sources.
+# ──────────────────────────────────────────────────────────────────────────────
+
+aftermarket_tools:
+
+  - id: DIABLOSPORT-TRINITY
+    name: "DiabloSport Trinity — PID Reference"
+    scope: "Aftermarket tuner/monitor with published PID lists for Duramax engines"
+    covers:
+      - "Engine Load, ECT, Boost, RPM, VSS, IAT, MAF, Battery Voltage"
+      - "EGR Duty Cycle, Injector Pulse Width (Cyl 1-8)"
+      - "Desired Idle RPM, Actual/Desired Fuel Rail Pressure"
+      - "Injection Timing, Turbo Vane Position, Fuel Rate"
+      - "Balance Rates (Cyl 1-8)"
+    pid_list_url: "https://www.manualsdir.com/manuals/402139/diablosport-trinity-pid-list.html?page=2"
+    note: "PID lists are published in the user manual. Covers LLY and LBZ."
+    confidence: community
+    applies_to: "gm_duramax"
+
+  - id: EFILIVE
+    name: "EFI Live — Diagnostic & Tuning Software"
+    scope: "Professional tuning software with comprehensive PID databases for GM diesel platforms"
+    covers:
+      - "Complete ECM PID list with addresses, formulas, and scaling"
+      - "TCM PID access for Allison transmissions"
+      - "Data logging at high sample rates"
+    url: "https://www.efilive.com/"
+    note: "EFI Live's PID database is one of the most complete for Duramax. Requires hardware (FlashScan/AutoCal)."
+    confidence: community
+    applies_to: "gm_duramax, gm_gasoline_v8"
+
+  - id: HP-TUNERS
+    name: "HP Tuners — VCM Suite"
+    scope: "Professional tuning and diagnostic software for GM (and other) vehicles"
+    covers:
+      - "ECM and TCM PID databases with addresses and scaling"
+      - "Real-time data logging"
+      - "DTC reading and clearing"
+    url: "https://www.hptuners.com/"
+    note: "HP Tuners has reverse-engineered PID addresses for most GM platforms. Cross-reference with EFI Live for verification."
+    confidence: community
+    applies_to: "gm_all, ford_all, stellantis_some"
+
+  - id: TORQUE-PRO
+    name: "Torque Pro — Android OBD-II App"
+    scope: "Consumer OBD-II diagnostic app with user-contributed enhanced PID packs"
+    note: "Duramax-specific PID packs available from community contributors. Good for cross-referencing but not authoritative."
+    confidence: community
+    applies_to: "all_obd2_vehicles"
+
+  - id: CSS-ELECTRONICS
+    name: "CSS Electronics — OBD2 PID Reference"
+    scope: "Comprehensive OBD-II PID table with formulas, units, and byte counts"
+    url: "https://www.csselectronics.com/pages/obd2-pid-table-on-board-diagnostics-j1979"
+    covers:
+      - "Complete Mode 01 PID table (0x00-0x7F) with formulas"
+      - "Response byte counts and data type"
+      - "Clear visualizations of PID structure"
+    note: "Excellent secondary reference for standard PIDs. Derived from SAE J1979. Not a primary source for enhanced PIDs."
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+  - id: CSS-ELECTRONICS-OBD2-EXPLAINED
+    name: "CSS Electronics — OBD2 Explained"
+    url: "https://www.csselectronics.com/pages/obd2-explained-simple-intro"
+    scope: "Protocol overview, pinout diagrams, and communication flow"
+    confidence: verified
+    applies_to: "all_obd2_vehicles"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. COMMUNITY-VERIFIED TECHNICAL REFERENCES
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Forum threads, blog posts, and guides where diagnostic data has been
+# cross-checked against OEM tools by multiple independent users.
+#
+# Confidence = "community" unless explicitly verified against Tech2/MDI.
+# ──────────────────────────────────────────────────────────────────────────────
+
+community_references:
+
+  # --- Duramax Injector Balance Rates (Verified Against Tech2) ---
+  - id: DMAX-BALANCE-RATES-TORQUEBHP
+    name: "Duramax Balance Rate Testing — Torque BHP Forum"
+    url: "https://torque-bhp.com/community/main-forum/help-required-gm-duramax-injector-balance-rate-testing/"
+    scope: "Complete PID list, formulas, and ELM327 config for injector balance rate testing"
+    verified_data:
+      pids:
+        cyl_1: { mode_22_did: "16 2F", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_2: { mode_22_did: "16 30", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_3: { mode_22_did: "16 31", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_4: { mode_22_did: "16 32", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_5: { mode_22_did: "16 33", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_6: { mode_22_did: "16 34", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_7: { mode_22_did: "16 35", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+        cyl_8: { mode_22_did: "16 36", formula: "((A*256+B)-32768)/64", unit: "mm3" }
+      header: "6C 10 F1"
+      elm327_command_example: "22 16 2F 01"
+      command_note: "Trailing 01 = data rate byte, required on J1850 VPW"
+      normal_ranges:
+        park_neutral: "+/- 4.0 mm3"
+        in_gear_idle: "+/- 6.0 mm3"
+        healthy: "+/- 2.0 mm3"
+        replacement_indicator: "+/- 4.0 to 5.0+ mm3"
+    note: "PIDs verified by multiple users against GM Tech2 readings."
+    confidence: community
+    applies_to: "gm_duramax_lb7, gm_duramax_lly"
+
+  - id: DMAX-BALANCE-RATES-DIESELPLACE-1
+    name: "Diesel Place — Balance Rate PIDs (Thread 915041)"
+    url: "https://www.dieselplace.com/threads/balance-rate-pids.915041/"
+    scope: "Discusses Mode 22 PIDs 162F-1636 with J1850 headers"
+    confidence: community
+    applies_to: "gm_duramax"
+
+  - id: DMAX-BALANCE-RATES-DIESELPLACE-2
+    name: "Diesel Place — Injector Balance Rate PID (Thread 457248)"
+    url: "https://www.dieselplace.com/threads/injector-balance-rate-pid.457248/"
+    scope: "Multi-page thread with PID verification against Tech2"
+    confidence: community
+    applies_to: "gm_duramax"
+
+  - id: DMAX-BALANCE-RATES-DURAMAXFORUM
+    name: "DuramaxForum — Injector Balance Rate Testing on the Cheap"
+    url: "https://www.duramaxforum.com/threads/injector-balance-rate-testing-on-the-cheap.496154/"
+    scope: "Budget ELM327 setup guide for balance rate monitoring"
+    confidence: community
+    applies_to: "gm_duramax"
+
+  - id: DMAX-TORQUE-PRO-BALANCE-RATES
+    name: "DuramaxForum — Torque Pro DMAX Balance Rates"
+    url: "https://www.duramaxforum.com/threads/torque-pro-app-now-has-dmax-inj-bal-rates.159430/"
+    scope: "23+ page thread documenting Torque Pro integration for balance rate monitoring"
+    note: "Confirms PIDs work on LB7 and LLY. Multiple users verified against Tech2."
+    confidence: community
+    applies_to: "gm_duramax_lb7, gm_duramax_lly"
+
+  - id: DMAX-BALANCE-RATES-PISTONTWISTIN
+    name: "Piston Twistin — Duramax Injector Balance Rates Guide"
+    url: "https://pistontwistin.org/blogs/how-do-i-data-log/%F0%9F%94%AC-duramax-injector-balance-rates-what-s-normal-what-s-not"
+    scope: "Diagnostic guide with thresholds by Duramax engine generation"
+    confidence: community
+    applies_to: "gm_duramax_all_generations"
+
+  - id: DMAX-BALANCE-RATES-INJECTORSDIRECT
+    name: "Injectors Direct — Balance Rates Interpretation Guide"
+    url: "https://www.injectorsdirect.com/what-you-need-to-know-about-duramax-balance-rates/"
+    scope: "How to interpret balance rate values and when to replace injectors"
+    confidence: community
+    applies_to: "gm_duramax"
+
+  # --- Allison TCM PIDs ---
+  - id: ALLISON-TCM-GMTNATION
+    name: "GMTNation — VPW Bus Scantool Accessible Vehicle Data"
+    url: "https://gmtnation.com/forums/threads/vpw-bus-scantool-accessible-vehicle-data.23825/"
+    scope: "Documents Mode 22 PID $1940 for TFT, plus exploratory Mode $2A, $12, $23 data"
+    verified_data:
+      tft: { mode_22_did: "19 40", formula: "A - 40", unit: "C", header: "6C 18 F1" }
+    note: "One of the few public sources for Allison TCM enhanced PID addresses on J1850 VPW."
+    confidence: community
+    applies_to: "allison_1000_gen3_gen4"
+
+  # --- LLY Protocol Verification ---
+  - id: LLY-PROTOCOL-DIESELPLACE
+    name: "Diesel Place — What OBD-II Protocol on LBZ?"
+    url: "https://www.dieselplace.com/threads/what-obdii-protocol-language-on-lbz.100960/"
+    scope: "Confirms LLY = J1850 VPW on OBD-II DLC, LBZ = first Duramax with CAN"
+    note: "Important for verifying which protocol to use for each Duramax generation."
+    confidence: community
+    applies_to: "gm_duramax_lly, gm_duramax_lbz"
+
+  # --- Oregon Fuel Injection Diagnostic Guide ---
+  - id: OFI-DMAX-DIAG
+    name: "Oregon Fuel Injection — 2001-2007 Duramax Diagnostics"
+    url: "https://oregonfuelinjection.com/wp-content/uploads/2016/08/gm-duramax-01-07-diagnostic.pdf"
+    scope: "Diagnostic procedures for LB7 through LMM Duramax engines"
+    covers:
+      - "Fuel system diagnostics (CP3 pump, injectors, FRP sensor)"
+      - "FICM testing procedures"
+      - "Balance rate interpretation"
+      - "Common failure modes by engine generation"
+    confidence: community
+    applies_to: "gm_duramax_lb7_lly_lbz_lmm"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. PROTOCOL & HARDWARE REFERENCES
+# ──────────────────────────────────────────────────────────────────────────────
+
+protocol_references:
+
+  - id: NXP-AN1731
+    name: "NXP Application Note AN1731 — Implementing J1850 VPW"
+    url: "https://www.nxp.com/docs/en/application-note/AN1731.pdf"
+    scope: "Technical implementation guide for J1850 VPW protocol on microcontrollers"
+    covers:
+      - "Bit timing and encoding (VPW pulse widths)"
+      - "Message framing and CRC calculation"
+      - "Arbitration and collision handling"
+    note: "Free PDF. Excellent for understanding the physical layer."
+    confidence: verified
+    applies_to: "j1850_vpw_all"
+
+  - id: INTEL-J1850-PAPER
+    name: "Intel — Implementing the J1850 Protocol"
+    url: "https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=237f5c6abbb64caa48e0cfea0a3806ef25199d8c"
+    scope: "Technical paper on J1850 implementation"
+    confidence: verified
+    applies_to: "j1850_all"
+
+  - id: OBDTESTER-PROTOCOLS
+    name: "OBDTester — OBD2 Protocols Overview"
+    url: "https://www.obdtester.com/obd2_protocols"
+    scope: "Protocol overview with pinouts and detection methods"
+    confidence: community
+    applies_to: "all_obd2_vehicles"
+
+  - id: SIGROK-J1850-VPW
+    name: "Sigrok — J1850 VPW Protocol Decoder"
+    url: "https://sigrok.org/wiki/Protocol_decoder:Sae_j1850_vpw"
+    scope: "Open-source protocol decoder documentation and bit-level decoding"
+    confidence: verified
+    applies_to: "j1850_vpw_all"
+
+  - id: INTERFACEBUS-J1850
+    name: "InterfaceBus — SAE J1850 Automotive Bus"
+    url: "http://www.interfacebus.com/Automotive_SAE_J1850_Bus.html"
+    scope: "Electrical interface specifications, timing diagrams"
+    confidence: community
+    applies_to: "j1850_all"
+
+  - id: KONNECTGPS-J1850
+    name: "Konnect GPS — SAE J1850 VPW vs PWM"
+    url: "https://konnectgps.com/blogs/news/sae-j1850"
+    scope: "Comparison of VPW and PWM variants, pin identification"
+    confidence: community
+    applies_to: "j1850_all"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. ECM HARDWARE REFERENCES
+# ──────────────────────────────────────────────────────────────────────────────
+
+ecm_hardware:
+
+  - id: BOSCH-E60-SMC
+    name: "SMC Auto Parts — Bosch E60 ECM for Duramax 6.6L"
+    url: "https://www.smcautoparts.com/Engine-Control-Module-E60-For-Duramax-Diesel-6-6L-p/12244189.htm"
+    scope: "Confirms Bosch E60 designation, GM part numbers 12244189 and 15292913"
+    confidence: verified
+    applies_to: "gm_duramax_lly"
+
+  - id: BOSCH-E60-GOECM
+    name: "GoECM — LLY Duramax ECM Listings"
+    urls:
+      - "https://goecm.com/products/2004-05-duramax-6-6l-lly-ecm-12244189"
+      - "https://goecm.com/products/2004-05-duramax-6-6l-lly-ecm-15292913"
+    scope: "Part number cross-reference, fitment verification"
+    confidence: verified
+    applies_to: "gm_duramax_lly"
+
+  - id: BOSCH-E60-PISTONTWISTIN
+    name: "Piston Twistin — LLY E60 ECM Unlocking"
+    url: "https://pistontwistin.org/products/lly-duramax-e60-ecm-unlocking"
+    scope: "Confirms E60 designation, describes ECM memory architecture"
+    confidence: community
+    applies_to: "gm_duramax_lly"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. CROSS-REFERENCE: WHICH SOURCES TO USE PER DATA TYPE
+# ──────────────────────────────────────────────────────────────────────────────
+
+source_selection_guide:
+  description: "When building a new vehicle spec, use this guide to identify which sources to consult for each type of data."
+
+  standard_obd2_pids:
+    primary: [SAE-J1979, SAE-J1979-DA]
+    secondary: [CSS-ELECTRONICS]
+    note: "Standard PIDs (Mode 01) are universally defined. Formulas do not vary by manufacturer."
+
+  enhanced_pids_mode_22:
+    primary: "Manufacturer service information (e.g. GM-ACDELCO-TDS, FORD-MOTORCRAFT)"
+    secondary: "Manufacturer scan tool PID database (e.g. GM-TECH2, GM-MDI)"
+    tertiary: "Aftermarket tuning tools (e.g. EFILIVE, HP-TUNERS, DIABLOSPORT-TRINITY)"
+    community: "Forum threads with Tech2/MDI comparison data"
+    warning: "Enhanced PIDs are manufacturer-specific and vary by ECM calibration. NEVER assume a PID address is correct without verification against at least 2 independent sources."
+
+  dtc_definitions:
+    generic: [SAE-J2012, SAE-J2012-DA]
+    manufacturer_specific: "Manufacturer service information"
+    note: "P0xxx codes (first digit 0) are standardized by SAE J2012. P1xxx, P2xxx (upper range), and P3xxx codes are manufacturer-specific."
+
+  communication_protocol:
+    standard: [SAE-J1850, SAE-J2284, SAE-J1962]
+    implementation: [NXP-AN1731, INTEL-J1850-PAPER]
+    note: "Protocol selection depends on vehicle year and manufacturer. Check DLC pin presence to identify protocol."
+
+  transmission_pids:
+    allison: [ALLISON-DOC, ALLISON-TS3977EN, ALLISON-HUB]
+    note: "Allison TCM PIDs are only officially documented through Allison DOC software. Community sources provide partial coverage."
+
+  thresholds_and_ranges:
+    primary: "Manufacturer service information (specifications section)"
+    secondary: "Engine family data (displacement, compression ratio, redline derive expected ranges)"
+    note: "Threshold values should come from OEM specs whenever possible. Community-derived ranges are useful but may not account for altitude, ambient temp, or vehicle-specific calibration differences."
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. DURAMAX GENERATION PROTOCOL MATRIX
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Quick reference for which protocol each Duramax generation uses on the
+# OBD-II DLC. Critical for building correct vehicle specs.
+# ──────────────────────────────────────────────────────────────────────────────
+
+duramax_protocol_matrix:
+  source: LLY-PROTOCOL-DIESELPLACE
+  generations:
+    - { generation: "LB7",  years: "2001-2004",     ecm: "Bosch E54",  protocol: "J1850 VPW", obd_pin: 2 }
+    - { generation: "LLY",  years: "2004.5-2005",   ecm: "Bosch E60",  protocol: "J1850 VPW", obd_pin: 2 }
+    - { generation: "LBZ",  years: "2006-2007",     ecm: "Bosch E78",  protocol: "CAN (ISO 15765)", obd_pins: "6,14" }
+    - { generation: "LMM",  years: "2007.5-2010",   ecm: "Bosch E78",  protocol: "CAN (ISO 15765)", obd_pins: "6,14" }
+    - { generation: "LML",  years: "2011-2016",     ecm: "Bosch EDC17", protocol: "CAN (ISO 15765)", obd_pins: "6,14" }
+    - { generation: "L5P",  years: "2017-present",  ecm: "Bosch MDG1",  protocol: "CAN (ISO 15765)", obd_pins: "6,14" }

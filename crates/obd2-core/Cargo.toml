@@ -1,0 +1,33 @@
+[package]
+name = "obd2-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-platform OBD-II diagnostic library"
+keywords = ["obd2", "obd-ii", "diagnostics", "automotive", "elm327"]
+categories = ["hardware-support"]
+
+[features]
+default = ["serial", "embedded-specs"]
+serial = ["dep:tokio-serial"]
+ble = ["dep:btleplug"]
+embedded-specs = []
+nhtsa = ["dep:reqwest"]
+full = ["serial", "ble", "embedded-specs", "nhtsa"]
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+
+tokio-serial = { version = "5", optional = true }
+btleplug = { version = "0.11", optional = true }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

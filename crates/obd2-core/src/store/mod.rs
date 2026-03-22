@@ -1,0 +1,1 @@
+//! Storage traits for persistence.
