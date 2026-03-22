@@ -211,7 +211,7 @@ pub struct CommunicationSpec {
 
 // ── Thresholds ──
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct Threshold {
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -309,7 +309,7 @@ impl Threshold {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct ThresholdSet {
     #[serde(default)]
     pub engine: Vec<NamedThreshold>,
@@ -317,7 +317,7 @@ pub struct ThresholdSet {
     pub transmission: Vec<NamedThreshold>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct NamedThreshold {
     pub name: String,
     pub threshold: Threshold,
@@ -439,6 +439,12 @@ pub struct SpecRegistry {
     specs: Vec<VehicleSpec>,
 }
 
+impl Default for SpecRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpecRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -467,10 +473,10 @@ impl SpecRegistry {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "yaml" || e == "yml") {
-                    if self.load_file(&path).is_ok() {
-                        count += 1;
-                    }
+                if path.extension().is_some_and(|e| e == "yaml" || e == "yml")
+                    && self.load_file(&path).is_ok()
+                {
+                    count += 1;
                 }
             }
         }
@@ -483,7 +489,7 @@ impl SpecRegistry {
             s.identity
                 .vin_match
                 .as_ref()
-                .map_or(false, |m| m.matches(vin))
+                .is_some_and(|m| m.matches(vin))
         })
     }
 

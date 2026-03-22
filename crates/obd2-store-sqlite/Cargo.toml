@@ -11,3 +11,5 @@ obd2-core = { path = "../obd2-core", default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
