@@ -14,9 +14,10 @@ use crate::protocol::service::{ServiceRequest, Target, DiagSession, ActuatorComm
 use tokio::sync::watch;
 
 /// State of the diagnostic session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SessionState {
     /// Default session — no special access.
+    #[default]
     Default,
     /// Extended session active — Mode 2F available after security access.
     Extended {
@@ -27,9 +28,6 @@ pub enum SessionState {
     Programming,
 }
 
-impl Default for SessionState {
-    fn default() -> Self { Self::Default }
-}
 
 /// Callback type for computing the security key from a seed.
 /// The algorithm is manufacturer-proprietary (BR-7.2).

@@ -71,8 +71,7 @@ impl Elm327Adapter {
     /// specifies how many leading bytes to skip (service echo + PID echo).
     fn parse_hex_response(response: &str, skip_bytes: usize) -> Result<Vec<u8>, Obd2Error> {
         let cleaned = response
-            .replace('\r', " ")
-            .replace('\n', " ")
+            .replace(['\r', '\n'], " ")
             .replace('>', "");
 
         let bytes: Result<Vec<u8>, _> = cleaned
@@ -280,11 +279,7 @@ impl Adapter for Elm327Adapter {
     async fn battery_voltage(&mut self) -> Result<Option<f64>, Obd2Error> {
         let response = self.send_command("ATRV").await?;
         let cleaned = response
-            .replace('V', "")
-            .replace('v', "")
-            .replace('>', "")
-            .replace('\r', "")
-            .replace('\n', "");
+            .replace(['V', 'v', '>', '\r', '\n'], "");
         let cleaned = cleaned.trim().to_string();
         match cleaned.parse::<f64>() {
             Ok(v) => Ok(Some(v)),

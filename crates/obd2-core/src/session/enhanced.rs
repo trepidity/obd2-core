@@ -55,9 +55,7 @@ pub async fn read_all_enhanced_for_module<A: Adapter>(
         match read_enhanced_pid(adapter, epid.did, module, spec).await {
             Ok(reading) => results.push((epid.clone(), reading)),
             Err(Obd2Error::NoData) => continue, // skip unsupported
-            Err(Obd2Error::NegativeResponse { nrc, .. })
-                if nrc == crate::error::NegativeResponse::RequestOutOfRange =>
-            {
+            Err(Obd2Error::NegativeResponse { nrc: crate::error::NegativeResponse::RequestOutOfRange, .. }) => {
                 continue
             }
             Err(e) => return Err(e),

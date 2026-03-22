@@ -305,7 +305,7 @@ impl Pid {
             0x30 => Ok(Value::Scalar(a)),
 
             // Catalyst temps: (256*A + B) / 10 - 40
-            0x3C | 0x3D | 0x3E | 0x3F => {
+            0x3C..=0x3F => {
                 Ok(Value::Scalar((256.0 * a + b) / 10.0 - 40.0))
             }
 

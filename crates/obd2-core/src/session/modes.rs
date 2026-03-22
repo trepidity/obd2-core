@@ -103,7 +103,7 @@ pub fn decode_readiness(data: &[u8]) -> Result<ReadinessStatus, Obd2Error> {
             monitors.push(MonitorStatus {
                 name: name.to_string(),
                 supported: (supported >> bit) & 1 == 1,
-                complete: !((complete >> bit) & 1 == 1), // bit=1 means NOT complete
+                complete: (complete >> bit) & 1 != 1, // bit=1 means NOT complete
             });
         }
     } else {
@@ -124,7 +124,7 @@ pub fn decode_readiness(data: &[u8]) -> Result<ReadinessStatus, Obd2Error> {
             monitors.push(MonitorStatus {
                 name: name.to_string(),
                 supported: (supported >> bit) & 1 == 1,
-                complete: !((complete >> bit) & 1 == 1),
+                complete: (complete >> bit) & 1 != 1,
             });
         }
     }
@@ -146,7 +146,7 @@ pub async fn read_full_vehicle_info<A: Adapter>(
     let vin_data = adapter.request(&vin_req).await?;
     let vin: String = vin_data
         .iter()
-        .filter(|&&b| b >= 0x20 && b <= 0x7E)
+        .filter(|&&b| (0x20..=0x7E).contains(&b))
         .map(|&b| b as char)
         .take(17)
         .collect();
@@ -163,7 +163,7 @@ pub async fn read_full_vehicle_info<A: Adapter>(
         Ok(data) => {
             let cal_str: String = data
                 .iter()
-                .filter(|&&b| b >= 0x20 && b <= 0x7E)
+                .filter(|&&b| (0x20..=0x7E).contains(&b))
                 .map(|&b| b as char)
                 .collect();
             if cal_str.is_empty() {
@@ -202,7 +202,7 @@ pub async fn read_full_vehicle_info<A: Adapter>(
         Ok(data) => {
             let name: String = data
                 .iter()
-                .filter(|&&b| b >= 0x20 && b <= 0x7E)
+                .filter(|&&b| (0x20..=0x7E).contains(&b))
                 .map(|&b| b as char)
                 .collect();
             if name.is_empty() {

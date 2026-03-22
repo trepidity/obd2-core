@@ -182,7 +182,7 @@ impl<A: Adapter> Session<A> {
         let data = self.adapter.request(&req).await?;
         // Filter printable ASCII, take first 17 chars
         let vin: String = data.iter()
-            .filter(|&&b| b >= 0x20 && b <= 0x7E)
+            .filter(|&&b| (0x20..=0x7E).contains(&b))
             .map(|&b| b as char)
             .take(17)
             .collect();

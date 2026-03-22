@@ -66,7 +66,7 @@ pub enum Chipset {
 }
 
 /// Adapter hardware capabilities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Capabilities {
     /// Can clear DTCs (Mode 04).
     pub can_clear_dtcs: bool,
@@ -80,14 +80,4 @@ pub struct Capabilities {
     pub adaptive_timing: bool,
 }
 
-impl Default for Capabilities {
-    fn default() -> Self {
-        Self {
-            can_clear_dtcs: false,
-            dual_can: false,
-            enhanced_diag: false,
-            battery_voltage: false,
-            adaptive_timing: false,
-        }
-    }
-}
+
