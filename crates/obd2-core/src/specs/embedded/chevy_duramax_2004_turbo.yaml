@@ -1,0 +1,142 @@
+# Simplified embedded spec: 2004.5 Duramax LLY
+# Matches VehicleSpec serde layout. Subset of full spec for binary embedding.
+
+spec_version: "1.0"
+
+identity:
+  name: "2004.5 GM Duramax LLY"
+  model_years: [2004, 2005]
+  makes:
+    - Chevrolet
+    - GMC
+  models:
+    - Silverado 2500HD
+    - Silverado 3500
+    - Sierra 2500HD
+    - Sierra 3500
+  engine:
+    code: LLY
+    displacement_l: 6.6
+    cylinders: 8
+    layout: V8
+    aspiration: turbocharged
+    fuel_type: diesel
+    fuel_system: "Bosch common-rail direct injection"
+    compression_ratio: 17.5
+    max_power_kw: 224.0
+    max_torque_nm: 895.0
+    redline_rpm: 3250
+    idle_rpm_warm: 680
+    idle_rpm_cold: 780
+    firing_order: [1, 2, 7, 8, 4, 5, 6, 3]
+    ecm_hardware: "Bosch E60"
+  transmission:
+    model: "Allison 1000 (5-speed)"
+    transmission_type: !Geared
+      speeds: 5
+      gear_ratios:
+        - ["1st", 3.10]
+        - ["2nd", 1.81]
+        - ["3rd", 1.41]
+        - ["4th", 1.00]
+        - ["5th", 0.71]
+    fluid_capacity_l: 13.5
+  vin_match:
+    vin_8th_digit: ['2']
+    wmi_prefixes:
+      - "1GC"
+      - "1GT"
+      - "2GC"
+    year_range: [2004, 2005]
+
+communication:
+  buses:
+    - id: j1850vpw
+      protocol: J1850Vpw
+      speed_bps: 10400
+      description: "Class 2 J1850 VPW bus"
+  elm327_protocol_code: "2"
+
+thresholds:
+  engine:
+    - name: coolant_temp
+      threshold:
+        min: -40.0
+        max: 120.0
+        warning_high: 105.0
+        critical_high: 115.0
+        unit: "\u00B0C"
+    - name: oil_temp
+      threshold:
+        min: -40.0
+        max: 150.0
+        warning_high: 120.0
+        critical_high: 135.0
+        unit: "\u00B0C"
+    - name: rpm
+      threshold:
+        min: 0.0
+        max: 3500.0
+        critical_high: 3250.0
+        unit: RPM
+
+polling_groups:
+  - name: critical
+    description: "Safety-critical parameters polled every loop"
+    target_interval_ms: 500
+    steps:
+      - target: broadcast
+        standard_pids: [0x05, 0x0C, 0x0D]
+        enhanced_pids: []
+
+diagnostic_rules:
+  - name: p0700_redirect
+    trigger: !DtcPresent "P0700"
+    action: !QueryModule
+      module: tcm
+      service: 3
+    description: "P0700 is a pass-through — read the real DTC from the TCM"
+  - name: ficm_health
+    trigger: !DtcRange
+      - "P0261"
+      - "P0272"
+    action: !CheckFirst
+      pid: 1348
+      module: ficm
+      reason: "Injector faults often caused by failing FICM (EDU) — check FICM voltage first"
+    description: "Check FICM voltage before chasing injector DTCs"
+
+known_issues:
+  - rank: 1
+    name: "Turbo Vane Position Sensor / Sticking Vanes"
+    description: "Carbon buildup causes turbo vanes to stick, triggering limp mode."
+    symptoms:
+      - "P0234, P0299, or P2563 DTCs"
+      - "Reduced power / limp mode"
+      - "Black smoke under boost"
+    root_cause: "Carbon soot accumulation on VGT vane mechanism"
+    quick_test:
+      description: "Command turbo vane position via scan tool and observe response"
+      pass_criteria: "Vane position tracks commanded value within 5% across full range"
+    fix: "Remove and clean turbo vane assembly; replace unison ring if worn."
+  - rank: 2
+    name: "FICM / EDU Failure"
+    description: "Fuel Injection Control Module degrades over time, causing hard starts and misfires."
+    symptoms:
+      - "Hard start or extended cranking"
+      - "Rough idle, misfires under load"
+      - "Multiple injector DTCs (P0261-P0272)"
+    root_cause: "Internal capacitor degradation reduces 48V injector drive voltage"
+    quick_test:
+      description: "Monitor FICM supply voltage with scan tool"
+      pass_criteria: "FICM voltage >= 46V at idle; drops below 45V indicate failure"
+    fix: "Replace or rebuild FICM; aftermarket units available with improved capacitors."
+  - rank: 3
+    name: "Injector Failure"
+    description: "High-pressure injectors wear over time causing balance-rate drift."
+    symptoms:
+      - "Rough idle"
+      - "White smoke at startup"
+      - "Individual cylinder contribution DTCs"
+    root_cause: "Internal injector seat erosion or sticking needle valve"
+    fix: "Replace failed injector(s); recommend replacing all 8 if mileage exceeds 150k."

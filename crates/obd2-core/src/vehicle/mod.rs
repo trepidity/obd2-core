@@ -1,5 +1,6 @@
 //! Vehicle specification types and loading.
 
+pub mod loader;
 pub mod vin;
 
 use serde::Deserialize;
@@ -68,6 +69,7 @@ pub struct BusConfig {
     pub id: BusId,
     pub protocol: Protocol,
     pub speed_bps: u32,
+    #[serde(default)]
     pub modules: Vec<Module>,
     pub description: Option<String>,
 }
@@ -90,9 +92,13 @@ pub struct VehicleSpec {
     pub identity: SpecIdentity,
     pub communication: CommunicationSpec,
     pub thresholds: Option<ThresholdSet>,
+    #[serde(default)]
     pub polling_groups: Vec<PollingGroup>,
+    #[serde(default)]
     pub diagnostic_rules: Vec<DiagnosticRule>,
+    #[serde(default)]
     pub known_issues: Vec<KnownIssue>,
+    pub dtc_library: Option<DtcLibrary>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -109,6 +115,7 @@ pub struct SpecIdentity {
 #[derive(Debug, Clone, Deserialize)]
 pub struct VinMatcher {
     pub vin_8th_digit: Option<Vec<char>>,
+    #[serde(default)]
     pub wmi_prefixes: Vec<String>,
     pub year_range: Option<(u16, u16)>,
 }
@@ -302,7 +309,9 @@ impl Threshold {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ThresholdSet {
+    #[serde(default)]
     pub engine: Vec<NamedThreshold>,
+    #[serde(default)]
     pub transmission: Vec<NamedThreshold>,
 }
 
@@ -325,7 +334,9 @@ pub struct PollingGroup {
 #[derive(Debug, Clone, Deserialize)]
 pub struct PollStep {
     pub target: String, // "broadcast" or module id
+    #[serde(default)]
     pub standard_pids: Vec<u8>, // PID codes
+    #[serde(default)]
     pub enhanced_pids: Vec<u16>, // DID values
 }
 
@@ -388,9 +399,13 @@ pub struct VehicleProfile {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DtcLibrary {
+    #[serde(default)]
     pub ecm: Vec<DtcEntry>,
+    #[serde(default)]
     pub tcm: Vec<DtcEntry>,
+    #[serde(default)]
     pub bcm: Vec<DtcEntry>,
+    #[serde(default)]
     pub network: Vec<DtcEntry>,
 }
 
@@ -415,19 +430,94 @@ impl DtcLibrary {
     }
 }
 
-// ── Spec Registry (placeholder — full impl in Task 10) ──
+// ── Spec Registry ──
 
+/// Registry of loaded vehicle specs. Matches specs to vehicles by VIN.
 pub struct SpecRegistry {
     specs: Vec<VehicleSpec>,
 }
 
 impl SpecRegistry {
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self { specs: Vec::new() }
     }
 
+    /// Create with embedded default specs.
+    pub fn with_defaults() -> Self {
+        let specs = crate::specs::embedded::load_embedded_specs();
+        Self { specs }
+    }
+
+    /// Load a spec from a YAML file.
+    pub fn load_file(&mut self, path: &std::path::Path) -> Result<(), crate::error::Obd2Error> {
+        let spec = loader::load_spec_from_file(path)?;
+        self.specs.push(spec);
+        Ok(())
+    }
+
+    /// Load all YAML specs from a directory.
+    pub fn load_directory(
+        &mut self,
+        dir: &std::path::Path,
+    ) -> Result<usize, crate::error::Obd2Error> {
+        let mut count = 0;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "yaml" || e == "yml") {
+                    if self.load_file(&path).is_ok() {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Match a spec to a VIN using VinMatcher rules.
+    pub fn match_vin(&self, vin: &str) -> Option<&VehicleSpec> {
+        self.specs.iter().find(|s| {
+            s.identity
+                .vin_match
+                .as_ref()
+                .map_or(false, |m| m.matches(vin))
+        })
+    }
+
+    /// Match by make, model, and year.
+    pub fn match_vehicle(&self, make: &str, model: &str, year: u16) -> Option<&VehicleSpec> {
+        self.specs.iter().find(|s| {
+            let year_ok = year >= s.identity.model_years.0 && year <= s.identity.model_years.1;
+            let make_ok = s
+                .identity
+                .makes
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(make));
+            let model_ok = s
+                .identity
+                .models
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(model));
+            year_ok && make_ok && model_ok
+        })
+    }
+
+    /// List all loaded specs.
     pub fn specs(&self) -> &[VehicleSpec] {
         &self.specs
+    }
+
+    /// Look up a DTC across all loaded spec DTC libraries.
+    pub fn lookup_dtc(&self, code: &str) -> Option<&DtcEntry> {
+        for spec in &self.specs {
+            if let Some(lib) = &spec.dtc_library {
+                if let Some(entry) = lib.lookup(code) {
+                    return Some(entry);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -625,5 +715,64 @@ mod tests {
             "Fuel Rail Pressure Too Low"
         );
         assert!(lib.lookup("P9999").is_none());
+    }
+
+    #[test]
+    fn test_load_embedded_duramax() {
+        let registry = SpecRegistry::with_defaults();
+        assert!(
+            !registry.specs().is_empty(),
+            "should have at least one embedded spec"
+        );
+        let spec = &registry.specs()[0];
+        assert_eq!(spec.identity.engine.code, "LLY");
+    }
+
+    #[test]
+    fn test_registry_match_vin_duramax() {
+        let registry = SpecRegistry::with_defaults();
+        let matched = registry.match_vin("1GCHK23224F000001");
+        assert!(matched.is_some(), "should match Duramax by VIN");
+        assert_eq!(matched.unwrap().identity.engine.code, "LLY");
+    }
+
+    #[test]
+    fn test_registry_no_match() {
+        let registry = SpecRegistry::with_defaults();
+        let matched = registry.match_vin("JH4KA7660PC000001");
+        assert!(matched.is_none(), "Acura should not match any spec");
+    }
+
+    #[test]
+    fn test_registry_match_vehicle() {
+        let registry = SpecRegistry::with_defaults();
+        let matched = registry.match_vehicle("Chevrolet", "Silverado 2500HD", 2004);
+        assert!(matched.is_some());
+    }
+
+    #[test]
+    fn test_load_from_str_invalid() {
+        let result = loader::load_spec_from_str("not: [valid: yaml: spec");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spec_has_thresholds() {
+        let registry = SpecRegistry::with_defaults();
+        let spec = &registry.specs()[0];
+        assert!(
+            spec.thresholds.is_some(),
+            "Duramax spec should have thresholds"
+        );
+    }
+
+    #[test]
+    fn test_spec_has_known_issues() {
+        let registry = SpecRegistry::with_defaults();
+        let spec = &registry.specs()[0];
+        assert!(
+            !spec.known_issues.is_empty(),
+            "Duramax spec should have known issues"
+        );
     }
 }
