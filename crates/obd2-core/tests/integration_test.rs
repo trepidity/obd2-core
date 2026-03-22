@@ -356,6 +356,40 @@ async fn test_embedded_spec_has_full_diagnostic_data() {
     assert!(!spec.polling_groups.is_empty());
 }
 
+/// Enhanced PIDs loaded from embedded spec and discoverable by module
+#[tokio::test]
+async fn test_enhanced_pids_from_spec() {
+    use obd2_core::vehicle::ModuleId;
+
+    let adapter = MockAdapter::with_vin("1GCHK23224F000001");
+    let mut session = Session::new(adapter);
+    let _profile = session.identify_vehicle().await.unwrap();
+
+    // ECM should have enhanced PIDs from the Duramax spec
+    let ecm_pids = session.module_pids(ModuleId::new("ecm"));
+    assert!(
+        ecm_pids.len() >= 2,
+        "Duramax ECM should have at least 2 enhanced PIDs, got {}",
+        ecm_pids.len()
+    );
+    assert!(ecm_pids.iter().any(|p| p.name.contains("Fuel Rail")));
+    assert!(ecm_pids.iter().any(|p| p.name.contains("Balance Rate")));
+
+    // FICM should have enhanced PIDs
+    let ficm_pids = session.module_pids(ModuleId::new("ficm"));
+    assert_eq!(ficm_pids.len(), 1);
+    assert!(ficm_pids[0].name.contains("FICM Voltage"));
+
+    // TCM should have enhanced PIDs (gear)
+    let tcm_pids = session.module_pids(ModuleId::new("tcm"));
+    assert_eq!(tcm_pids.len(), 1);
+    assert!(tcm_pids[0].name.contains("Gear"));
+
+    // Unknown module returns empty
+    let none_pids = session.module_pids(ModuleId::new("unknown"));
+    assert!(none_pids.is_empty());
+}
+
 /// Multiple sessions with different VINs are independent
 #[tokio::test]
 async fn test_multiple_sessions_independent() {
@@ -372,6 +406,22 @@ async fn test_multiple_sessions_independent() {
     assert_eq!(profile2.vin, "JH4KA7660PC000001");
     assert!(profile1.spec.is_some());
     assert!(profile2.spec.is_none());
+}
+
+/// Mode 05: O2 sensor monitoring through Session API
+#[tokio::test]
+async fn test_o2_monitoring_through_session() {
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+
+    // Read a single TID
+    let results = session.read_o2_monitoring(0x01).await.unwrap();
+    assert_eq!(results.len(), 2); // B1S1 and B1S2 from mock
+    assert!((results[0].value - 0.45).abs() < 0.001);
+
+    // Read all TIDs
+    let all_results = session.read_all_o2_monitoring().await.unwrap();
+    assert_eq!(all_results.len(), 18); // 9 TIDs * 2 sensors
 }
 
 /// DTC deduplication utility
@@ -476,6 +526,7 @@ async fn test_polling_cycle_threshold_integration() {
         polling_groups: vec![],
         diagnostic_rules: vec![],
         known_issues: vec![],
+        enhanced_pids: vec![],
     };
 
     let mut adapter = MockAdapter::new();

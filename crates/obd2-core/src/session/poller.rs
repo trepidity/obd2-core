@@ -315,6 +315,7 @@ mod tests {
             polling_groups: vec![],
             diagnostic_rules: vec![],
             known_issues: vec![],
+            enhanced_pids: vec![],
         };
 
         let mut adapter = MockAdapter::new();

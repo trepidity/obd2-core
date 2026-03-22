@@ -190,6 +190,7 @@ mod tests {
                     fix: "Replace or rebuild FICM".into(),
                 },
             ],
+            enhanced_pids: vec![],
         }
     }
 

@@ -62,6 +62,77 @@ pub struct DtcDetail {
     pub aging_counter: u16,
 }
 
+/// Mode 05: O2 sensor monitoring test result (non-CAN only).
+#[derive(Debug, Clone)]
+pub struct O2TestResult {
+    pub test_id: u8,
+    pub test_name: &'static str,
+    pub sensor: O2SensorLocation,
+    pub value: f64,
+    pub unit: &'static str,
+}
+
+/// O2 sensor location encoding for Mode 05.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum O2SensorLocation {
+    Bank1Sensor1,
+    Bank1Sensor2,
+    Bank2Sensor1,
+    Bank2Sensor2,
+    Bank3Sensor1,
+    Bank3Sensor2,
+    Bank4Sensor1,
+    Bank4Sensor2,
+}
+
+impl O2SensorLocation {
+    /// Decode from the Mode 05 sensor number byte.
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0x01 => Some(Self::Bank1Sensor1),
+            0x02 => Some(Self::Bank1Sensor2),
+            0x03 => Some(Self::Bank2Sensor1),
+            0x04 => Some(Self::Bank2Sensor2),
+            0x05 => Some(Self::Bank3Sensor1),
+            0x06 => Some(Self::Bank3Sensor2),
+            0x07 => Some(Self::Bank4Sensor1),
+            0x08 => Some(Self::Bank4Sensor2),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for O2SensorLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bank1Sensor1 => write!(f, "B1S1"),
+            Self::Bank1Sensor2 => write!(f, "B1S2"),
+            Self::Bank2Sensor1 => write!(f, "B2S1"),
+            Self::Bank2Sensor2 => write!(f, "B2S2"),
+            Self::Bank3Sensor1 => write!(f, "B3S1"),
+            Self::Bank3Sensor2 => write!(f, "B3S2"),
+            Self::Bank4Sensor1 => write!(f, "B4S1"),
+            Self::Bank4Sensor2 => write!(f, "B4S2"),
+        }
+    }
+}
+
+/// Return the test name and unit for a Mode 05 TID.
+pub fn o2_test_info(tid: u8) -> (&'static str, &'static str, fn(u16) -> f64) {
+    match tid {
+        0x01 => ("Rich-to-Lean Threshold Voltage", "V", |v| v as f64 * 0.005),
+        0x02 => ("Lean-to-Rich Threshold Voltage", "V", |v| v as f64 * 0.005),
+        0x03 => ("Low Sensor Voltage for Switch Time", "V", |v| v as f64 * 0.005),
+        0x04 => ("High Sensor Voltage for Switch Time", "V", |v| v as f64 * 0.005),
+        0x05 => ("Rich-to-Lean Switch Time", "s", |v| v as f64 * 0.004),
+        0x06 => ("Lean-to-Rich Switch Time", "s", |v| v as f64 * 0.004),
+        0x07 => ("Minimum Sensor Voltage", "V", |v| v as f64 * 0.005),
+        0x08 => ("Maximum Sensor Voltage", "V", |v| v as f64 * 0.005),
+        0x09 => ("Time Between Transitions", "s", |v| v as f64 * 0.04),
+        _ => ("Unknown O2 Test", "", |v| v as f64),
+    }
+}
+
 /// A raw diagnostic service request.
 #[derive(Debug, Clone)]
 pub struct ServiceRequest {
@@ -147,5 +218,27 @@ mod tests {
         let req = ServiceRequest::read_dtcs();
         assert_eq!(req.service_id, 0x03);
         assert!(req.data.is_empty());
+    }
+
+    #[test]
+    fn test_o2_sensor_location_roundtrip() {
+        for b in 0x01..=0x08u8 {
+            assert!(O2SensorLocation::from_byte(b).is_some());
+        }
+    }
+
+    #[test]
+    fn test_o2_test_info_all_standard_tids() {
+        for tid in 0x01..=0x09u8 {
+            let (name, unit, _) = o2_test_info(tid);
+            assert!(!name.contains("Unknown"), "TID {:#04X} should be known", tid);
+            assert!(!unit.is_empty(), "TID {:#04X} should have a unit", tid);
+        }
+    }
+
+    #[test]
+    fn test_o2_test_info_unknown_tid() {
+        let (name, _, _) = o2_test_info(0xFF);
+        assert!(name.contains("Unknown"));
     }
 }

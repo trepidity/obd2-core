@@ -166,6 +166,19 @@ impl Adapter for MockAdapter {
                 }
             }
 
+            // Mode 05: O2 sensor monitoring
+            0x05 => {
+                match (req.data.first(), req.data.get(1)) {
+                    // Return mock O2 data for B1S1 and B1S2 (sensors 0x01, 0x02)
+                    (Some(_tid), Some(&sensor)) if sensor <= 0x02 => {
+                        // Return a realistic threshold voltage ~0.45V = 90 * 0.005
+                        Ok(vec![0x00, 0x5A])
+                    }
+                    // Other sensors not present
+                    _ => Err(Obd2Error::NoData),
+                }
+            }
+
             // Mode 22: Enhanced read (return mock data)
             0x21 | 0x22 => Ok(vec![0x80, 0x00]),
 

@@ -4,7 +4,7 @@ use super::enhanced::{Value, Bitfield};
 use crate::error::Obd2Error;
 
 /// The type of value a PID returns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 pub enum ValueType {
     /// Numeric measurement (temperature, pressure, RPM, %)
     Scalar,

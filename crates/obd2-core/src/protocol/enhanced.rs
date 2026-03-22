@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::error::Obd2Error;
 
 /// Confidence level of diagnostic data from a vehicle spec.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 pub enum Confidence {
     Verified,
     Community,
@@ -13,7 +13,7 @@ pub enum Confidence {
 }
 
 /// How to decode raw response bytes into a Value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[non_exhaustive]
 pub enum Formula {
     Linear { scale: f64, offset: f64 },
@@ -25,7 +25,7 @@ pub enum Formula {
 }
 
 /// Enhanced manufacturer-specific PID (Mode 21/22).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct EnhancedPid {
     pub service_id: u8,
     pub did: u16,

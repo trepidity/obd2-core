@@ -67,13 +67,14 @@ pub async fn read_all_enhanced_for_module<A: Adapter>(
 
 /// List enhanced PIDs available for a module from the spec.
 pub fn list_module_pids<'a>(
-    _spec: Option<&'a VehicleSpec>,
-    _module: &ModuleId,
+    spec: Option<&'a VehicleSpec>,
+    module: &ModuleId,
 ) -> Vec<&'a EnhancedPid> {
-    // Search spec for PIDs belonging to this module
-    // For now this returns empty -- needs spec modules to have enhanced_pids populated
-    // This is a placeholder until spec loading populates module PIDs
-    vec![]
+    let Some(spec) = spec else { return vec![] };
+    spec.enhanced_pids
+        .iter()
+        .filter(|epid| epid.module.eq_ignore_ascii_case(&module.0))
+        .collect()
 }
 
 /// Find the service ID for an enhanced PID (0x21 for Honda/Toyota, 0x22 default).
@@ -85,15 +86,21 @@ fn find_service_id(spec: Option<&VehicleSpec>, did: u16, module: &ModuleId) -> u
     }
 }
 
+/// Public version of find_service_id for use by Session.
+pub fn find_service_id_from_spec(spec: Option<&VehicleSpec>, did: u16, module: &ModuleId) -> u8 {
+    find_service_id(spec, did, module)
+}
+
 /// Find an EnhancedPid definition in the spec by DID and module.
 fn find_enhanced_pid<'a>(
-    _spec: Option<&'a VehicleSpec>,
-    _did: u16,
-    _module: &ModuleId,
+    spec: Option<&'a VehicleSpec>,
+    did: u16,
+    module: &ModuleId,
 ) -> Option<&'a EnhancedPid> {
-    // Search spec modules for matching DID
-    // Placeholder -- needs spec data model to include enhanced PIDs per module
-    None
+    let spec = spec?;
+    spec.enhanced_pids
+        .iter()
+        .find(|epid| epid.did == did && epid.module.eq_ignore_ascii_case(&module.0))
 }
 
 /// Decode raw bytes using the formula from an EnhancedPid definition.
@@ -267,5 +274,181 @@ mod tests {
     fn test_available_buses_no_spec() {
         let buses = available_buses(None);
         assert!(buses.is_empty());
+    }
+
+    fn make_test_spec_with_enhanced_pids() -> VehicleSpec {
+        use crate::vehicle::{CommunicationSpec, EngineSpec, SpecIdentity};
+
+        VehicleSpec {
+            spec_version: Some("1.0".into()),
+            identity: SpecIdentity {
+                name: "Test".into(),
+                model_years: (2020, 2020),
+                makes: vec![],
+                models: vec![],
+                engine: EngineSpec {
+                    code: "T".into(),
+                    displacement_l: 2.0,
+                    cylinders: 4,
+                    layout: "I4".into(),
+                    aspiration: "NA".into(),
+                    fuel_type: "Gas".into(),
+                    fuel_system: None,
+                    compression_ratio: None,
+                    max_power_kw: None,
+                    max_torque_nm: None,
+                    redline_rpm: 6500,
+                    idle_rpm_warm: 700,
+                    idle_rpm_cold: 900,
+                    firing_order: None,
+                    ecm_hardware: None,
+                },
+                transmission: None,
+                vin_match: None,
+            },
+            communication: CommunicationSpec {
+                buses: vec![],
+                elm327_protocol_code: None,
+            },
+            thresholds: None,
+            polling_groups: vec![],
+            diagnostic_rules: vec![],
+            known_issues: vec![],
+            dtc_library: None,
+            enhanced_pids: vec![
+                EnhancedPid {
+                    service_id: 0x22,
+                    did: 0x1170,
+                    name: "Fuel Rail Pressure".into(),
+                    unit: "kPa".into(),
+                    formula: Formula::TwoByte { scale: 10.0, offset: 0.0 },
+                    bytes: 2,
+                    module: "ecm".into(),
+                    value_type: crate::protocol::pid::ValueType::Scalar,
+                    confidence: crate::protocol::enhanced::Confidence::Verified,
+                    command_suffix: None,
+                },
+                EnhancedPid {
+                    service_id: 0x21,
+                    did: 0x0544,
+                    name: "FICM Voltage".into(),
+                    unit: "V".into(),
+                    formula: Formula::TwoByte { scale: 0.0039, offset: 0.0 },
+                    bytes: 2,
+                    module: "ficm".into(),
+                    value_type: crate::protocol::pid::ValueType::Scalar,
+                    confidence: crate::protocol::enhanced::Confidence::Verified,
+                    command_suffix: None,
+                },
+                EnhancedPid {
+                    service_id: 0x22,
+                    did: 0x162F,
+                    name: "Balance Rate".into(),
+                    unit: "mm3".into(),
+                    formula: Formula::Centered { center: 32768.0, divisor: 64.0 },
+                    bytes: 2,
+                    module: "ecm".into(),
+                    value_type: crate::protocol::pid::ValueType::Scalar,
+                    confidence: crate::protocol::enhanced::Confidence::Community,
+                    command_suffix: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_list_module_pids_returns_matching() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let ecm = ModuleId::new("ecm");
+        let pids = list_module_pids(Some(&spec), &ecm);
+        assert_eq!(pids.len(), 2, "ECM should have 2 enhanced PIDs");
+        assert!(pids.iter().any(|p| p.did == 0x1170));
+        assert!(pids.iter().any(|p| p.did == 0x162F));
+    }
+
+    #[test]
+    fn test_list_module_pids_case_insensitive() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let ficm = ModuleId::new("FICM");
+        let pids = list_module_pids(Some(&spec), &ficm);
+        assert_eq!(pids.len(), 1);
+        assert_eq!(pids[0].did, 0x0544);
+    }
+
+    #[test]
+    fn test_list_module_pids_no_spec() {
+        let ecm = ModuleId::new("ecm");
+        let pids = list_module_pids(None, &ecm);
+        assert!(pids.is_empty());
+    }
+
+    #[test]
+    fn test_list_module_pids_unknown_module() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let unknown = ModuleId::new("abs");
+        let pids = list_module_pids(Some(&spec), &unknown);
+        assert!(pids.is_empty());
+    }
+
+    #[test]
+    fn test_find_enhanced_pid_by_did_and_module() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let ecm = ModuleId::new("ecm");
+        let found = find_enhanced_pid(Some(&spec), 0x1170, &ecm);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "Fuel Rail Pressure");
+    }
+
+    #[test]
+    fn test_find_enhanced_pid_wrong_module() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let tcm = ModuleId::new("tcm");
+        let found = find_enhanced_pid(Some(&spec), 0x1170, &tcm);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_find_service_id_from_spec_honda_style() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let ficm = ModuleId::new("ficm");
+        // FICM PID has service_id 0x21
+        let sid = find_service_id_from_spec(Some(&spec), 0x0544, &ficm);
+        assert_eq!(sid, 0x21);
+    }
+
+    #[test]
+    fn test_find_service_id_defaults_to_0x22() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let ecm = ModuleId::new("ecm");
+        // Unknown DID falls back to 0x22
+        let sid = find_service_id_from_spec(Some(&spec), 0xFFFF, &ecm);
+        assert_eq!(sid, 0x22);
+    }
+
+    #[tokio::test]
+    async fn test_read_enhanced_with_spec_decodes_formula() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let mut adapter = MockAdapter::new();
+        adapter.initialize().await.unwrap();
+        let module = ModuleId::new("ecm");
+        // MockAdapter returns [0x80, 0x00] for Mode 22
+        // Balance Rate: (0x8000 - 32768) / 64 = 0.0
+        let reading = read_enhanced_pid(&mut adapter, 0x162F, &module, Some(&spec))
+            .await
+            .unwrap();
+        assert!(matches!(reading.value, Value::Scalar(_)));
+        assert!((reading.value.as_f64().unwrap()).abs() < 0.01);
+    }
+
+    #[tokio::test]
+    async fn test_read_all_enhanced_for_module() {
+        let spec = make_test_spec_with_enhanced_pids();
+        let mut adapter = MockAdapter::new();
+        adapter.initialize().await.unwrap();
+        let module = ModuleId::new("ecm");
+        let results = read_all_enhanced_for_module(&mut adapter, &module, Some(&spec))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2, "ECM has 2 enhanced PIDs in test spec");
     }
 }

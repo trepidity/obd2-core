@@ -12,5 +12,5 @@ pub use dtc::{Dtc, DtcCategory, DtcStatus, DtcStatusByte, Severity};
 pub use enhanced::{EnhancedPid, Formula, Confidence};
 pub use service::{
     DiagSession, ActuatorCommand, ReadinessStatus, MonitorStatus,
-    TestResult, VehicleInfo, ServiceRequest,
+    TestResult, VehicleInfo, ServiceRequest, O2TestResult, O2SensorLocation,
 };

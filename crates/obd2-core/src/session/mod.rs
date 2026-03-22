@@ -245,19 +245,30 @@ impl<A: Adapter> Session<A> {
     }
 
     /// Look up the service ID for an enhanced PID from the spec.
-    fn lookup_enhanced_service_id(&self, _did: u16, _module: &ModuleId) -> u8 {
-        if let Some(_spec) = self.spec() {
-            // Search modules in the spec for this DID
-            // Default to 0x22 if not found
-        }
-        0x22 // Default: Mode 22
+    fn lookup_enhanced_service_id(&self, did: u16, module: &ModuleId) -> u8 {
+        enhanced::find_service_id_from_spec(self.spec(), did, module)
     }
 
     /// List enhanced PIDs available for a module (from matched spec).
-    pub fn module_pids(&self, _module: ModuleId) -> Vec<&crate::protocol::enhanced::EnhancedPid> {
-        // Would search spec modules for matching module ID
-        // For now return empty -- full impl needs spec module data
-        vec![]
+    pub fn module_pids(&self, module: ModuleId) -> Vec<&crate::protocol::enhanced::EnhancedPid> {
+        enhanced::list_module_pids(self.spec(), &module)
+    }
+
+    // -- Mode 05: O2 Sensor Monitoring (non-CAN) --
+
+    /// Read O2 sensor monitoring test results for a specific TID.
+    pub async fn read_o2_monitoring(
+        &mut self,
+        test_id: u8,
+    ) -> Result<Vec<crate::protocol::service::O2TestResult>, Obd2Error> {
+        modes::read_o2_monitoring(&mut self.adapter, test_id).await
+    }
+
+    /// Read all O2 sensor monitoring tests (TIDs 0x01-0x09).
+    pub async fn read_all_o2_monitoring(
+        &mut self,
+    ) -> Result<Vec<crate::protocol::service::O2TestResult>, Obd2Error> {
+        modes::read_all_o2_monitoring(&mut self.adapter).await
     }
 
     // -- State Accessors --

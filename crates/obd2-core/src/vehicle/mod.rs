@@ -101,6 +101,8 @@ pub struct VehicleSpec {
     #[serde(default)]
     pub known_issues: Vec<KnownIssue>,
     pub dtc_library: Option<DtcLibrary>,
+    #[serde(default)]
+    pub enhanced_pids: Vec<crate::protocol::enhanced::EnhancedPid>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,9 +148,13 @@ impl VinMatcher {
         let year_ok = self
             .year_range
             .as_ref()
-            .map(|(_min, _max)| {
-                // Simple year decode from 10th char (would use vin.rs in practice)
-                true // placeholder — real impl in Task 7
+            .map(|(min, max)| {
+                let (current, previous) = vin::decode_year_candidates(vin);
+                let in_range = |y: Option<i32>| {
+                    y.is_some_and(|y| y >= *min as i32 && y <= *max as i32)
+                };
+                // Accept if either VIN year cycle falls within range
+                in_range(current) || in_range(previous)
             })
             .unwrap_or(true);
 
@@ -690,6 +696,63 @@ mod tests {
             year_range: None,
         };
         assert!(!matcher.matches("1FTHK23124F000001")); // WMI=1FT (Ford)
+    }
+
+    #[test]
+    fn test_vin_matcher_year_range_match() {
+        let matcher = VinMatcher {
+            vin_8th_digit: None,
+            wmi_prefixes: vec![],
+            year_range: Some((2004, 2005)),
+        };
+        // 10th char '4' decodes to 2034 (current) or 2004 (previous)
+        // 2004 is within [2004, 2005], so this should match
+        assert!(matcher.matches("1GCHK23124F000001"));
+    }
+
+    #[test]
+    fn test_vin_matcher_year_range_no_match() {
+        let matcher = VinMatcher {
+            vin_8th_digit: None,
+            wmi_prefixes: vec![],
+            year_range: Some((2010, 2012)),
+        };
+        // 10th char '4' decodes to 2034 or 2004 -- neither in [2010, 2012]
+        assert!(!matcher.matches("1GCHK23124F000001"));
+    }
+
+    #[test]
+    fn test_vin_matcher_year_range_current_cycle() {
+        let matcher = VinMatcher {
+            vin_8th_digit: None,
+            wmi_prefixes: vec![],
+            year_range: Some((2018, 2020)),
+        };
+        // 10th char 'L' = 2020 (current cycle) -- matches
+        assert!(matcher.matches("1GCHK2312LF000001"));
+    }
+
+    #[test]
+    fn test_vin_matcher_year_range_combined_check() {
+        // Full matcher: WMI + 8th digit + year range all must pass
+        let matcher = VinMatcher {
+            vin_8th_digit: Some(vec!['2']),
+            wmi_prefixes: vec!["1GC".into()],
+            year_range: Some((2004, 2005)),
+        };
+        // This is the Duramax VIN: WMI=1GC, 8th='2', year='4'(2004) -- all match
+        assert!(matcher.matches("1GCHK23224F000001"));
+    }
+
+    #[test]
+    fn test_vin_matcher_year_range_fails_other_check() {
+        let matcher = VinMatcher {
+            vin_8th_digit: Some(vec!['9']), // wrong digit
+            wmi_prefixes: vec!["1GC".into()],
+            year_range: Some((2004, 2005)),
+        };
+        // Year matches but 8th digit doesn't
+        assert!(!matcher.matches("1GCHK23224F000001"));
     }
 
     #[test]

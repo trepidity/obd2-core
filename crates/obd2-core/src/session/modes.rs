@@ -6,7 +6,8 @@ use crate::protocol::dtc::{Dtc, DtcStatus};
 use crate::protocol::enhanced::{Reading, ReadingSource};
 use crate::protocol::pid::Pid;
 use crate::protocol::service::{
-    MonitorStatus, ReadinessStatus, ServiceRequest, Target, TestResult, VehicleInfo,
+    MonitorStatus, O2SensorLocation, O2TestResult, ReadinessStatus, ServiceRequest, Target,
+    TestResult, VehicleInfo,
 };
 use crate::vehicle::VehicleSpec;
 use std::time::Instant;
@@ -67,6 +68,62 @@ pub async fn read_test_results<A: Adapter>(
             unit: String::new(),
         });
         i += 8;
+    }
+    Ok(results)
+}
+
+/// Mode 05: Read O2 sensor monitoring test results (non-CAN vehicles).
+///
+/// Queries a specific TID across all O2 sensor locations. On CAN vehicles,
+/// this data is available through Mode 06 instead.
+pub async fn read_o2_monitoring<A: Adapter>(
+    adapter: &mut A,
+    test_id: u8,
+) -> Result<Vec<O2TestResult>, Obd2Error> {
+    let mut results = Vec::new();
+
+    // Query each sensor location (0x01..=0x08)
+    for sensor_byte in 0x01..=0x08u8 {
+        let req = ServiceRequest {
+            service_id: 0x05,
+            data: vec![test_id, sensor_byte],
+            target: Target::Broadcast,
+        };
+        match adapter.request(&req).await {
+            Ok(data) if data.len() >= 2 => {
+                let Some(sensor) = O2SensorLocation::from_byte(sensor_byte) else {
+                    continue;
+                };
+                let raw_value = u16::from_be_bytes([data[0], data[1]]);
+                let (test_name, unit, convert) =
+                    crate::protocol::service::o2_test_info(test_id);
+                results.push(O2TestResult {
+                    test_id,
+                    test_name,
+                    sensor,
+                    value: convert(raw_value),
+                    unit,
+                });
+            }
+            // Sensor not present or not supported -- skip
+            _ => continue,
+        }
+    }
+
+    Ok(results)
+}
+
+/// Mode 05: Read all standard O2 monitoring TIDs (0x01-0x09) across all sensors.
+pub async fn read_all_o2_monitoring<A: Adapter>(
+    adapter: &mut A,
+) -> Result<Vec<O2TestResult>, Obd2Error> {
+    let mut results = Vec::new();
+    for tid in 0x01..=0x09u8 {
+        match read_o2_monitoring(adapter, tid).await {
+            Ok(mut tid_results) => results.append(&mut tid_results),
+            Err(Obd2Error::NoData) => continue,
+            Err(e) => return Err(e),
+        }
     }
     Ok(results)
 }
@@ -454,5 +511,79 @@ mod tests {
         let data = [0x00, 0x00, 0x00, 0x00];
         let dtcs = decode_dtc_bytes(&data, DtcStatus::Stored);
         assert!(dtcs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_o2_monitoring_single_tid() {
+        let mut adapter = MockAdapter::new();
+        adapter.initialize().await.unwrap();
+        // TID 0x01: Rich-to-Lean Threshold Voltage
+        let results = read_o2_monitoring(&mut adapter, 0x01).await.unwrap();
+        // MockAdapter returns data for sensors 0x01 and 0x02
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].test_id, 0x01);
+        assert_eq!(results[0].test_name, "Rich-to-Lean Threshold Voltage");
+        assert_eq!(results[0].unit, "V");
+        // value = 0x005A = 90, * 0.005 = 0.45V
+        assert!((results[0].value - 0.45).abs() < 0.001);
+        assert_eq!(
+            results[0].sensor,
+            crate::protocol::service::O2SensorLocation::Bank1Sensor1
+        );
+        assert_eq!(
+            results[1].sensor,
+            crate::protocol::service::O2SensorLocation::Bank1Sensor2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_all_o2_monitoring() {
+        let mut adapter = MockAdapter::new();
+        adapter.initialize().await.unwrap();
+        let results = read_all_o2_monitoring(&mut adapter).await.unwrap();
+        // 9 TIDs * 2 sensors each = 18 results
+        assert_eq!(results.len(), 18);
+        // Verify different TIDs present
+        assert!(results.iter().any(|r| r.test_id == 0x01));
+        assert!(results.iter().any(|r| r.test_id == 0x05));
+        assert!(results.iter().any(|r| r.test_id == 0x09));
+    }
+
+    #[test]
+    fn test_o2_sensor_location_display() {
+        use crate::protocol::service::O2SensorLocation;
+        assert_eq!(format!("{}", O2SensorLocation::Bank1Sensor1), "B1S1");
+        assert_eq!(format!("{}", O2SensorLocation::Bank2Sensor2), "B2S2");
+    }
+
+    #[test]
+    fn test_o2_sensor_location_from_byte() {
+        use crate::protocol::service::O2SensorLocation;
+        assert_eq!(
+            O2SensorLocation::from_byte(0x01),
+            Some(O2SensorLocation::Bank1Sensor1)
+        );
+        assert_eq!(
+            O2SensorLocation::from_byte(0x08),
+            Some(O2SensorLocation::Bank4Sensor2)
+        );
+        assert_eq!(O2SensorLocation::from_byte(0x00), None);
+        assert_eq!(O2SensorLocation::from_byte(0x09), None);
+    }
+
+    #[test]
+    fn test_o2_test_info_voltage_tid() {
+        let (name, unit, convert) = crate::protocol::service::o2_test_info(0x01);
+        assert_eq!(name, "Rich-to-Lean Threshold Voltage");
+        assert_eq!(unit, "V");
+        assert!((convert(90) - 0.45).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_o2_test_info_time_tid() {
+        let (name, unit, convert) = crate::protocol::service::o2_test_info(0x05);
+        assert_eq!(name, "Rich-to-Lean Switch Time");
+        assert_eq!(unit, "s");
+        assert!((convert(250) - 1.0).abs() < 0.001);
     }
 }

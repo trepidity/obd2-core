@@ -89,6 +89,61 @@ polling_groups:
         standard_pids: [0x05, 0x0C, 0x0D]
         enhanced_pids: []
 
+enhanced_pids:
+  - service_id: 0x22
+    did: 0x0544
+    name: "FICM Voltage"
+    unit: "V"
+    formula: !TwoByte
+      scale: 0.0039
+      offset: 0.0
+    bytes: 2
+    module: ficm
+    value_type: Scalar
+    confidence: Verified
+    command_suffix: null
+  - service_id: 0x22
+    did: 0x162F
+    name: "Injector Balance Rate Cyl 1"
+    unit: "mm3"
+    formula: !Centered
+      center: 32768.0
+      divisor: 64.0
+    bytes: 2
+    module: ecm
+    value_type: Scalar
+    confidence: Community
+    command_suffix: null
+  - service_id: 0x22
+    did: 0x1170
+    name: "Fuel Rail Pressure"
+    unit: "kPa"
+    formula: !TwoByte
+      scale: 10.0
+      offset: 0.0
+    bytes: 2
+    module: ecm
+    value_type: Scalar
+    confidence: Verified
+    command_suffix: null
+  - service_id: 0x22
+    did: 0x1948
+    name: "Current Gear"
+    unit: "gear"
+    formula: !Enumerated
+      values:
+        - [0, "P/N"]
+        - [1, "1st"]
+        - [2, "2nd"]
+        - [3, "3rd"]
+        - [4, "4th"]
+        - [5, "5th"]
+    bytes: 1
+    module: tcm
+    value_type: State
+    confidence: Inferred
+    command_suffix: null
+
 diagnostic_rules:
   - name: p0700_redirect
     trigger: !DtcPresent "P0700"
