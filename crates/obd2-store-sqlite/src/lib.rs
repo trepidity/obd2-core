@@ -215,6 +215,8 @@ struct SerializableProfile {
     model: Option<String>,
     year: Option<i32>,
     engine_code: Option<String>,
+    manufacturer: Option<String>,
+    truck_class: Option<String>,
 }
 
 impl From<&VehicleProfile> for SerializableProfile {
@@ -223,16 +225,29 @@ impl From<&VehicleProfile> for SerializableProfile {
             vin: p.vin.clone(),
             make: None,
             model: None,
-            year: None,
+            year: p.decoded_vin.as_ref().and_then(|d| d.year),
             engine_code: p.spec.as_ref().map(|s| s.identity.engine.code.clone()),
+            manufacturer: p.decoded_vin.as_ref().and_then(|d| d.manufacturer.clone()),
+            truck_class: p.decoded_vin.as_ref().and_then(|d| d.truck_class.clone()),
         }
     }
 }
 
 impl From<SerializableProfile> for VehicleProfile {
     fn from(sp: SerializableProfile) -> Self {
+        let decoded_vin = if sp.manufacturer.is_some() || sp.year.is_some() || sp.truck_class.is_some() {
+            Some(obd2_core::vehicle::vin::DecodedVin {
+                year: sp.year,
+                year_alt: None,
+                manufacturer: sp.manufacturer,
+                truck_class: sp.truck_class,
+            })
+        } else {
+            None
+        };
         VehicleProfile {
             vin: sp.vin,
+            decoded_vin,
             info: None,
             spec: None,
             supported_pids: std::collections::HashSet::new(),
@@ -258,6 +273,7 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
         let profile = VehicleProfile {
             vin: "1GCHK23224F000001".into(),
+            decoded_vin: None,
             info: None,
             spec: None,
             supported_pids: std::collections::HashSet::new(),
@@ -337,6 +353,7 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
         let profile = VehicleProfile {
             vin: "1GCHK23224F000001".into(),
+            decoded_vin: None,
             info: None,
             spec: None,
             supported_pids: std::collections::HashSet::new(),

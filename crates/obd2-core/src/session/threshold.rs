@@ -14,12 +14,12 @@ pub fn evaluate_pid_threshold(
     let spec = spec?;
     let thresholds = spec.thresholds.as_ref()?;
 
-    // Map PID code to threshold name
-    let name = pid_threshold_name(pid)?;
+    // Map PID code to threshold name(s)
+    let names = pid_threshold_name(pid)?;
 
     // Search engine thresholds first, then transmission
     for named in thresholds.engine.iter().chain(thresholds.transmission.iter()) {
-        if named.name == name {
+        if names.iter().any(|n| named.name == *n) {
             return named.threshold.evaluate(value, pid.name());
         }
     }
@@ -47,19 +47,22 @@ pub fn evaluate_enhanced_threshold(
 }
 
 /// Map a standard PID to its threshold name in the spec.
-fn pid_threshold_name(pid: Pid) -> Option<&'static str> {
+///
+/// Tries both short names (used by embedded specs) and long names for
+/// maximum compatibility with user-authored specs.
+fn pid_threshold_name(pid: Pid) -> Option<&'static [&'static str]> {
     match pid.0 {
-        0x05 => Some("coolant_temp_c"),
-        0x0C => Some("rpm"),
-        0x5C => Some("oil_temp_c"),
-        0x0B => Some("intake_map_kpa"),
-        0x10 => Some("maf_gs"),
-        0x42 => Some("battery_voltage"),
-        0x2F => Some("fuel_tank_pct"),
-        0x5E => Some("fuel_rate_lh"),
-        0x46 => Some("ambient_temp_c"),
-        0x0F => Some("intake_air_temp_c"),
-        0x33 => Some("barometric_kpa"),
+        0x05 => Some(&["coolant_temp", "coolant_temp_c"]),
+        0x0C => Some(&["rpm"]),
+        0x5C => Some(&["oil_temp", "oil_temp_c"]),
+        0x0B => Some(&["intake_map_kpa"]),
+        0x10 => Some(&["maf_gs"]),
+        0x42 => Some(&["battery_voltage"]),
+        0x2F => Some(&["fuel_tank_pct"]),
+        0x5E => Some(&["fuel_rate_lh"]),
+        0x46 => Some(&["ambient_temp_c", "ambient_temp"]),
+        0x0F => Some(&["intake_air_temp_c", "intake_air_temp"]),
+        0x33 => Some(&["barometric_kpa"]),
         _ => None,
     }
 }

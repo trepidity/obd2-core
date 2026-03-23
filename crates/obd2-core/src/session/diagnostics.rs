@@ -1,4 +1,17 @@
 //! Diagnostic intelligence — DTC enrichment, rules, known issues.
+//!
+//! ## DTC Description Pipeline
+//!
+//! obd2-core provides a two-tier DTC description system:
+//!
+//! 1. **Universal SAE J2012 table** (~200 codes) — built into [`crate::protocol::dtc`],
+//!    auto-populated when DTCs are created via `from_bytes()` or `from_code()`.
+//!
+//! 2. **Vehicle-specific enrichment** — [`enrich_dtcs`] overlays descriptions,
+//!    severity, and technician notes from the matched [`VehicleSpec`]'s DTC library.
+//!
+//! Consumers do NOT need their own DTC description tables. Call `enrich_dtcs()`
+//! after reading DTCs to get the most specific descriptions available.
 
 use crate::protocol::dtc::{Dtc, universal_dtc_description};
 use crate::vehicle::{VehicleSpec, DiagnosticRule, RuleTrigger, KnownIssue};

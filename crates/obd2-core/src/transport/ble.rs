@@ -29,7 +29,11 @@ const NUS_TX_CHAR: Uuid = Uuid::from_u128(0x6E40_0003_B5A3_F393_E0A9_E50E_24DC_C
 const NUS_RX_CHAR: Uuid = Uuid::from_u128(0x6E40_0002_B5A3_F393_E0A9_E50E_24DC_CA9E); // write to this
 
 /// Known name prefixes for OBD-II BLE adapters.
-const ADAPTER_NAME_PATTERNS: &[&str] = &["OBDLink", "OBD", "ELM327", "STN", "OBDII", "Vgate", "vLink", "Veepeak"];
+///
+/// Used by [`is_adapter_match`] and [`BleTransport::scan_and_connect`] to identify
+/// OBD-II adapters during BLE scanning. Consumers building custom scanner UIs can
+/// use this list directly for device filtering.
+pub const ADAPTER_NAME_PATTERNS: &[&str] = &["OBDLink", "OBD", "ELM327", "STN", "OBDII", "Vgate", "vLink", "Veepeak"];
 
 /// Read timeout for BLE responses.
 const BLE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -101,8 +105,14 @@ fn find_uart_characteristics(
 
 // ── Adapter name matching ───────────────────────────────────────────────────
 
-/// Check if a device name matches our adapter filter.
-fn is_adapter_match(name: &str, name_filter: Option<&str>) -> bool {
+/// Check if a BLE device name matches known OBD-II adapter patterns.
+///
+/// If `name_filter` is `Some`, matches when the name contains the filter string
+/// (case-insensitive). Otherwise, checks against [`ADAPTER_NAME_PATTERNS`].
+///
+/// Useful for consumers building custom scanner UIs who need to filter
+/// discovered BLE devices before presenting them to the user.
+pub fn is_adapter_match(name: &str, name_filter: Option<&str>) -> bool {
     let lower = name.to_lowercase();
     if let Some(filter) = name_filter {
         lower.contains(&filter.to_lowercase())

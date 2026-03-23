@@ -9,6 +9,8 @@ pub mod mock;
 pub mod serial;
 #[cfg(feature = "ble")]
 pub mod ble;
+#[cfg(feature = "ble")]
+pub use ble::{ADAPTER_NAME_PATTERNS, is_adapter_match};
 
 use async_trait::async_trait;
 use crate::error::Obd2Error;

@@ -100,6 +100,44 @@ impl MockAdapter {
             _ => vec![0x00],                         // Unknown: return 0
         }
     }
+
+    /// Generate a mock J1939 PGN response.
+    fn mock_j1939_response(&self, pgn: u32) -> Vec<u8> {
+        match pgn {
+            // EEC1 (61444): RPM 680, torque 30%
+            61444 => {
+                let rpm_raw = (680.0_f64 / 0.125) as u16; // 5440
+                vec![
+                    0x00,                       // torque mode
+                    155,                        // demand torque: -125 + 155 = 30%
+                    155,                        // actual torque: -125 + 155 = 30%
+                    (rpm_raw & 0xFF) as u8,     // RPM low
+                    (rpm_raw >> 8) as u8,       // RPM high
+                    0xFF, 0xFF, 0xFF,           // reserved
+                ]
+            }
+            // CCVS (65265): 0 km/h, brake off, cruise off
+            65265 => vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            // ET1 (65262): coolant 50°C, fuel 20°C
+            65262 => vec![90, 60, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF],
+            // EFLP1 (65263): oil 400kPa, coolant 100kPa
+            65263 => vec![0xFF, 50, 0xFF, 100, 0xFF, 0xFF, 0xFF, 0xFF],
+            // LFE (65266): fuel rate 5.0 L/h
+            65266 => {
+                let rate_raw = (5.0_f64 / 0.05) as u16; // 100
+                vec![
+                    (rate_raw & 0xFF) as u8,
+                    (rate_raw >> 8) as u8,
+                    0x00, 0x02,     // fuel economy
+                    0xFF, 0xFF, 0xFF, 0xFF,
+                ]
+            }
+            // DM1 (65226): no active DTCs
+            65226 => vec![0x00, 0x00], // lamp status only, no DTCs
+            // Unknown PGN
+            _ => vec![0xFF; 8],
+        }
+    }
 }
 
 impl Default for MockAdapter {
@@ -199,6 +237,17 @@ impl Adapter for MockAdapter {
 
             // Mode 3E: Tester present
             0x3E => Ok(vec![]),
+
+            // J1939 Request PGN (0xEA)
+            0xEA => {
+                let pgn = match (req.data.first(), req.data.get(1), req.data.get(2)) {
+                    (Some(&lo), Some(&mid), Some(&hi)) => {
+                        (lo as u32) | ((mid as u32) << 8) | ((hi as u32) << 16)
+                    }
+                    _ => return Err(Obd2Error::NoData),
+                };
+                Ok(self.mock_j1939_response(pgn))
+            }
 
             _ => Err(Obd2Error::NoData),
         }

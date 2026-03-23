@@ -552,3 +552,102 @@ async fn test_polling_cycle_threshold_integration() {
         "50 deg C should trigger warning alert (threshold set to 40)"
     );
 }
+
+/// identify_vehicle populates decoded_vin with manufacturer and vehicle class
+#[tokio::test]
+async fn test_identify_vehicle_decoded_vin() {
+    let adapter = MockAdapter::with_vin("1GCHK23224F000001");
+    let mut session = Session::new(adapter);
+    let profile = session.identify_vehicle().await.unwrap();
+
+    let decoded = profile.decoded_vin.as_ref().expect("decoded_vin should be populated");
+    assert_eq!(decoded.manufacturer.as_deref(), Some("Chevrolet"));
+    assert_eq!(decoded.truck_class.as_deref(), Some("diesel-truck"));
+    assert!(decoded.year.is_some());
+}
+
+/// evaluate_threshold works as a Session method
+#[tokio::test]
+async fn test_session_evaluate_threshold() {
+    let adapter = MockAdapter::with_vin("1GCHK23224F000001");
+    let mut session = Session::new(adapter);
+    let _profile = session.identify_vehicle().await.unwrap();
+
+    // Duramax coolant warning is 105°C — 90°C should be normal (None)
+    assert!(session.evaluate_threshold(Pid::COOLANT_TEMP, 90.0).is_none());
+
+    // 110°C should trigger warning
+    let result = session.evaluate_threshold(Pid::COOLANT_TEMP, 110.0);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().level, obd2_core::vehicle::AlertLevel::Warning);
+
+    // 120°C should trigger critical
+    let result = session.evaluate_threshold(Pid::COOLANT_TEMP, 120.0);
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().level, obd2_core::vehicle::AlertLevel::Critical);
+}
+
+/// J1939 PGN read through Session
+#[tokio::test]
+async fn test_j1939_read_eec1() {
+    use obd2_core::protocol::j1939::{Pgn, decode_eec1};
+
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+
+    let data = session.read_j1939_pgn(Pgn::EEC1).await.unwrap();
+    let eec1 = decode_eec1(&data).expect("should decode EEC1");
+    assert!((eec1.engine_rpm.unwrap() - 680.0).abs() < 0.2);
+}
+
+/// J1939 DTC read through Session
+#[tokio::test]
+async fn test_j1939_read_dtcs() {
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+
+    let dtcs = session.read_j1939_dtcs().await.unwrap();
+    // MockAdapter returns no active DTCs by default
+    assert!(dtcs.is_empty());
+}
+
+/// J1939 temperature read through Session
+#[tokio::test]
+async fn test_j1939_read_temperatures() {
+    use obd2_core::protocol::j1939::{Pgn, decode_et1};
+
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+
+    let data = session.read_j1939_pgn(Pgn::ET1).await.unwrap();
+    let et1 = decode_et1(&data).expect("should decode ET1");
+    assert!((et1.coolant_temp.unwrap() - 50.0).abs() < 0.1);
+    assert!((et1.fuel_temp.unwrap() - 20.0).abs() < 0.1);
+}
+
+/// J1939 fluid pressure read through Session
+#[tokio::test]
+async fn test_j1939_read_pressures() {
+    use obd2_core::protocol::j1939::{Pgn, decode_eflp1};
+
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+
+    let data = session.read_j1939_pgn(Pgn::EFLP1).await.unwrap();
+    let eflp1 = decode_eflp1(&data).expect("should decode EFLP1");
+    assert!((eflp1.oil_pressure.unwrap() - 400.0).abs() < 0.1);
+    assert!((eflp1.coolant_pressure.unwrap() - 100.0).abs() < 0.1);
+}
+
+/// J1939 fuel economy read through Session
+#[tokio::test]
+async fn test_j1939_read_fuel_economy() {
+    use obd2_core::protocol::j1939::{Pgn, decode_lfe};
+
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+
+    let data = session.read_j1939_pgn(Pgn::LFE).await.unwrap();
+    let lfe = decode_lfe(&data).expect("should decode LFE");
+    assert!((lfe.fuel_rate.unwrap() - 5.0).abs() < 0.1);
+}

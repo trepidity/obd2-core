@@ -398,6 +398,9 @@ pub struct QuickTest {
 #[derive(Debug, Clone)]
 pub struct VehicleProfile {
     pub vin: String,
+    /// Offline VIN decode: manufacturer, year, vehicle class.
+    /// Always populated after `identify_vehicle()`.
+    pub decoded_vin: Option<vin::DecodedVin>,
     pub info: Option<crate::protocol::service::VehicleInfo>,
     pub spec: Option<VehicleSpec>,
     pub supported_pids: std::collections::HashSet<crate::protocol::pid::Pid>,

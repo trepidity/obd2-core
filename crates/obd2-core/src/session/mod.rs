@@ -194,18 +194,24 @@ impl<A: Adapter> Session<A> {
     }
 
     /// Identify vehicle: read VIN, decode offline, match spec.
+    ///
+    /// Populates the VehicleProfile with:
+    /// - Offline VIN decode (manufacturer, year, vehicle class)
+    /// - Matched vehicle spec (if any)
+    /// - Supported standard PIDs
     pub async fn identify_vehicle(&mut self) -> Result<VehicleProfile, Obd2Error> {
         let vin = self.read_vin().await?;
         let supported = self.supported_pids().await.unwrap_or_default();
 
-        // Decode VIN offline (for side effects / logging; result unused for now)
-        let _decoded = crate::vehicle::vin::decode(&vin);
+        // Decode VIN offline — manufacturer, year, vehicle class
+        let decoded = crate::vehicle::vin::decode(&vin);
 
         // Match spec by VIN
         let spec = self.specs.match_vin(&vin).cloned();
 
         let profile = VehicleProfile {
             vin: vin.clone(),
+            decoded_vin: Some(decoded),
             info: Some(VehicleInfo {
                 vin: vin.clone(),
                 calibration_ids: vec![],
@@ -269,6 +275,84 @@ impl<A: Adapter> Session<A> {
         &mut self,
     ) -> Result<Vec<crate::protocol::service::O2TestResult>, Obd2Error> {
         modes::read_all_o2_monitoring(&mut self.adapter).await
+    }
+
+    // -- J1939 Heavy-Duty Protocol --
+
+    /// Read a J1939 Parameter Group from a heavy-duty vehicle.
+    ///
+    /// Sends a CAN 29-bit request for the specified PGN and returns the raw
+    /// response bytes. Use the decoder functions in [`crate::protocol::j1939`]
+    /// to parse the response.
+    ///
+    /// Requires an ELM327/STN adapter on a J1939-capable vehicle (CAN 29-bit 250 kbps).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use obd2_core::protocol::j1939::{Pgn, decode_eec1};
+    /// # async fn example(session: &mut obd2_core::session::Session<obd2_core::adapter::mock::MockAdapter>) {
+    /// let data = session.read_j1939_pgn(Pgn::EEC1).await.unwrap();
+    /// if let Some(eec1) = decode_eec1(&data) {
+    ///     if let (Some(rpm), Some(torque)) = (eec1.engine_rpm, eec1.actual_torque_pct) {
+    ///         println!("RPM: {rpm:.0}, Torque: {torque:.0}%");
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub async fn read_j1939_pgn(
+        &mut self,
+        pgn: crate::protocol::j1939::Pgn,
+    ) -> Result<Vec<u8>, Obd2Error> {
+        // J1939 request PGN via CAN 29-bit.
+        // ELM327/STN: use service 0x00 with the PGN encoded in the data bytes.
+        // The PGN is sent as a 3-byte request: [PGN_low, PGN_mid, PGN_high]
+        let pgn_bytes = [
+            (pgn.0 & 0xFF) as u8,
+            ((pgn.0 >> 8) & 0xFF) as u8,
+            ((pgn.0 >> 16) & 0xFF) as u8,
+        ];
+        // Use raw_request with a J1939-specific service marker (0xEA = Request PGN)
+        self.raw_request(0xEA, &pgn_bytes, Target::Broadcast).await
+    }
+
+    /// Read and decode J1939 active DTCs (DM1 — PGN 65226).
+    ///
+    /// Returns J1939-format DTCs (SPN + FMI), distinct from OBD-II P-codes.
+    pub async fn read_j1939_dtcs(&mut self) -> Result<Vec<crate::protocol::j1939::J1939Dtc>, Obd2Error> {
+        let data = self.read_j1939_pgn(crate::protocol::j1939::Pgn::DM1).await?;
+        Ok(crate::protocol::j1939::decode_dm1(&data))
+    }
+
+    // -- Thresholds --
+
+    /// Evaluate a standard PID reading against the matched spec's thresholds.
+    ///
+    /// Returns `None` if the value is in normal range, no threshold is defined
+    /// for this PID, or no spec is matched.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use obd2_core::protocol::pid::Pid;
+    /// # use obd2_core::vehicle::AlertLevel;
+    /// # async fn example(session: &obd2_core::session::Session<obd2_core::adapter::mock::MockAdapter>) {
+    /// if let Some(result) = session.evaluate_threshold(Pid::COOLANT_TEMP, 110.0) {
+    ///     match result.level {
+    ///         AlertLevel::Warning => eprintln!("Warning: {}", result.message),
+    ///         AlertLevel::Critical => eprintln!("CRITICAL: {}", result.message),
+    ///         AlertLevel::Normal => {}
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn evaluate_threshold(&self, pid: Pid, value: f64) -> Option<crate::vehicle::ThresholdResult> {
+        threshold::evaluate_pid_threshold(self.spec(), pid, value)
+    }
+
+    /// Evaluate an enhanced PID (DID) reading against the matched spec's thresholds.
+    pub fn evaluate_enhanced_threshold(&self, did: u16, value: f64) -> Option<crate::vehicle::ThresholdResult> {
+        threshold::evaluate_enhanced_threshold(self.spec(), did, value)
     }
 
     // -- State Accessors --

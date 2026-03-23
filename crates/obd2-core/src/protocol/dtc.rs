@@ -1,4 +1,12 @@
-//! DTC types and status definitions.
+//! DTC types, status definitions, and built-in SAE J2012 description table.
+//!
+//! This module includes ~200 universal DTC descriptions covering powertrain (P),
+//! chassis (C), body (B), and network (U) codes. Descriptions are automatically
+//! populated when creating DTCs via [`Dtc::from_bytes`] or [`Dtc::from_code`].
+//!
+//! For vehicle-specific enrichment (severity, notes, related PIDs), use
+//! [`crate::session::diagnostics::enrich_dtcs`] which layers spec-based
+//! descriptions on top of the universal table.
 
 /// A Diagnostic Trouble Code read from the vehicle.
 #[derive(Debug, Clone, PartialEq, Eq)]

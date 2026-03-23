@@ -52,6 +52,9 @@ use obd2_core::protocol::enhanced::{Reading, Value, ReadingSource, EnhancedPid, 
 use obd2_core::protocol::dtc::{Dtc, DtcCategory, DtcStatus, Severity};
 use obd2_core::protocol::service::{O2TestResult, O2SensorLocation};
 
+// J1939 heavy-duty protocol (for fleet trucks) — re-exported from protocol::
+use obd2_core::protocol::{Pgn, J1939Dtc, decode_eec1, decode_ccvs, decode_et1, decode_eflp1, decode_lfe};
+
 // Vehicle — specs, profiles, modules
 use obd2_core::vehicle::{VehicleSpec, VehicleProfile, ModuleId, SpecRegistry};
 
@@ -130,6 +133,37 @@ let supported = session.supported_pids().await?;  // HashSet<Pid>
 let raw = session.raw_request(0x01, &[0x0C], Target::Broadcast).await?;
 ```
 
+### J1939 Heavy-Duty Protocol (for fleet trucks)
+
+```rust
+use obd2_core::protocol::{Pgn, decode_eec1, decode_ccvs, decode_et1, decode_eflp1, decode_lfe};
+
+// Read engine data (PGN 61444 — EEC1)
+let data = session.read_j1939_pgn(Pgn::EEC1).await?;
+if let Some(eec1) = decode_eec1(&data) {
+    // eec1.engine_rpm (Option<f64> — None if ECU reports "not available")
+    // eec1.actual_torque_pct, eec1.driver_demand_torque_pct
+}
+
+// Read vehicle speed (PGN 65265 — CCVS)
+let data = session.read_j1939_pgn(Pgn::CCVS).await?;
+if let Some(ccvs) = decode_ccvs(&data) {
+    // ccvs.vehicle_speed (Option<f64>), ccvs.brake_switch (Option<bool>)
+}
+
+// Read temperatures (PGN 65262 — ET1)
+let data = session.read_j1939_pgn(Pgn::ET1).await?;
+if let Some(et1) = decode_et1(&data) {
+    // et1.coolant_temp, et1.fuel_temp, et1.oil_temp — all Option<f64>
+}
+
+// Read J1939 DTCs (SPN+FMI format, not P-codes)
+let j1939_dtcs = session.read_j1939_dtcs().await?;
+for dtc in &j1939_dtcs {
+    // dtc.spn, dtc.fmi, dtc.fmi_description(), dtc.occurrence_count
+}
+```
+
 ### Diagnostic Intelligence (requires matched spec)
 
 ```rust
@@ -147,9 +181,11 @@ if let Some(spec) = session.spec() {
         // issue.quick_test — Optional diagnostic step
     }
 
-    // Threshold evaluation
-    let result = session.evaluate_threshold(Pid::COOLANT_TEMP, 110.0);
-    // result.level: Normal | Warning | Critical
+    // Threshold evaluation (returns None if value is in normal range)
+    if let Some(result) = session.evaluate_threshold(Pid::COOLANT_TEMP, 110.0) {
+        // result.level: Warning | Critical
+        // result.message: human-readable description
+    }
 
     // DTC library lookup
     if let Some(entry) = spec.dtc_library.as_ref().and_then(|lib| lib.lookup("P0087")) {
@@ -425,8 +461,12 @@ These patterns worked well during the obd2-dash integration:
 
 4. **Poll enhanced PIDs less frequently** — Standard PIDs every tick, enhanced PIDs every 5th tick, O2 monitoring every 20th tick. Enhanced reads require header switching which is slower.
 
-5. **Mock mode uses static values** — `MockAdapter` returns fixed data (RPM 680, Coolant 50°C). Use `MockAdapter::with_vin("...")` to match a specific vehicle spec for testing.
+5. **Mock mode uses static values** — `MockAdapter` returns fixed data (RPM 680, Coolant 50°C). Use `MockAdapter::with_vin("...")` to match a specific vehicle spec for testing. J1939 PGNs are also mocked.
 
 6. **BLE scanning is async** — `BleTransport::scan_and_connect()` blocks for the scan duration. Run in a spawned task, not on the UI thread.
 
-7. **Device discovery is consumer's responsibility** — obd2-core has no scanner module. Use `serialport::available_ports()` for serial and `btleplug` for BLE scanning in your app.
+7. **BLE adapter name matching is public** — `obd2_core::transport::ble::is_adapter_match()` and `ADAPTER_NAME_PATTERNS` are available for building custom scanner UIs. Use these to filter discovered BLE devices rather than maintaining a separate pattern list.
+
+8. **VIN decoding is built-in** — After `identify_vehicle()`, `profile.decoded_vin` contains manufacturer name, model year, and vehicle class (diesel-truck, gas-truck-v8, suv, sedan, performance). No need for an external VIN decoder.
+
+9. **DTC descriptions are built-in** — obd2-core includes ~200 SAE J2012 DTC descriptions, auto-populated on `Dtc::from_bytes()` / `Dtc::from_code()`. Call `enrich_dtcs()` to layer vehicle-specific descriptions, severity, and notes from the matched spec. No need for a separate DTC description table.
