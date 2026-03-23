@@ -4,10 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "SQLite storage backend for obd2-core"
+keywords = ["obd2", "obd-ii", "diagnostics", "sqlite", "automotive"]
+categories = ["hardware-support"]
 
 [dependencies]
-obd2-core = { path = "../obd2-core", default-features = false }
+obd2-core = { version = "0.1.0", path = "../obd2-core", default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { workspace = true }
 async-trait = { workspace = true }
