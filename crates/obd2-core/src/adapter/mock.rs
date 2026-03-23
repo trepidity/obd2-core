@@ -32,9 +32,12 @@ impl MockAdapter {
         let mut supported = HashSet::new();
         // Standard PIDs most vehicles support
         for pid in &[
-            0x00u8, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D,
-            0x0E, 0x0F, 0x10, 0x11, 0x1C, 0x1F, 0x20, 0x21, 0x2C, 0x2F,
-            0x31, 0x33, 0x40, 0x42, 0x43, 0x44, 0x46, 0x5C, 0x5E,
+            0x00u8, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
+            0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x1C, 0x1F,
+            0x20, 0x21, 0x23, 0x2C, 0x2D, 0x2E, 0x2F, 0x30,
+            0x31, 0x33, 0x3C, 0x3D, 0x3E, 0x3F,
+            0x40, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x49, 0x4A, 0x4C,
+            0x59, 0x5C, 0x5E,
             0x60, 0x61, 0x62, 0x63,
         ] {
             supported.insert(Pid(*pid));
@@ -68,28 +71,51 @@ impl MockAdapter {
     /// Generate a realistic mock response for a standard PID.
     fn mock_pid_response(&self, pid: u8) -> Vec<u8> {
         match pid {
+            // Engine performance (1-byte)
             0x04 => vec![0x40],                     // Engine load: 25%
-            0x05 => vec![0x5A],                     // Coolant temp: 50 deg C (90-40)
-            0x06 => vec![0x80],                     // Fuel trim: 0%
-            0x07 => vec![0x80],                     // Long fuel trim: 0%
+            0x05 => vec![0x5A],                     // Coolant temp: 50°C (90-40)
+            0x06 => vec![0x80],                     // STFT Bank 1: 0%
+            0x07 => vec![0x80],                     // LTFT Bank 1: 0%
+            0x08 => vec![0x80],                     // STFT Bank 2: 0%
+            0x09 => vec![0x80],                     // LTFT Bank 2: 0%
+            0x0A => vec![0x64],                     // Fuel pressure: 300 kPa
             0x0B => vec![0x65],                     // MAP: 101 kPa
-            0x0C => vec![0x0A, 0xA0],               // RPM: 680
             0x0D => vec![0x00],                     // Speed: 0 km/h (idle)
-            0x0E => vec![0x8C],                     // Timing: 6 deg
-            0x0F => vec![0x41],                     // IAT: 25 deg C
-            0x10 => vec![0x00, 0xFA],               // MAF: 2.5 g/s
+            0x0E => vec![0x8C],                     // Timing: 6°
+            0x0F => vec![0x41],                     // IAT: 25°C
             0x11 => vec![0x26],                     // Throttle: 15%
             0x1C => vec![0x06],                     // OBD standard: EOBD
-            0x1F => vec![0x00, 0x3C],               // Runtime: 60s
             0x2C => vec![0x1A],                     // Commanded EGR: 10%
+            0x2D => vec![0x80],                     // EGR error: 0%
+            0x2E => vec![0x40],                     // Commanded EVAP purge: 25%
             0x2F => vec![0xB3],                     // Fuel tank: 70%
+            0x30 => vec![0x32],                     // Warm-ups since clear: 50
             0x33 => vec![0x65],                     // Baro: 101 kPa
-            0x42 => vec![0x38, 0x5C],               // Voltage: 14.428V
-            0x46 => vec![0x41],                     // Ambient: 25 deg C
-            0x5C => vec![0x78],                     // Oil temp: 80 deg C
-            0x5E => vec![0x00, 0x64],               // Fuel rate: 5.0 L/h
+            0x45 => vec![0x26],                     // Relative throttle: 15%
+            0x46 => vec![0x41],                     // Ambient: 25°C
+            0x47 => vec![0x40],                     // Abs throttle B: 25%
+            0x49 => vec![0x1A],                     // Accel pedal D: 10%
+            0x4A => vec![0x1A],                     // Accel pedal E: 10%
+            0x4C => vec![0x26],                     // Commanded throttle: 15%
+            0x5C => vec![0x78],                     // Oil temp: 80°C
             0x61 => vec![0x8D],                     // Demanded torque: 16%
             0x62 => vec![0x8D],                     // Actual torque: 16%
+            // Engine performance (2-byte)
+            0x0C => vec![0x0A, 0xA0],               // RPM: 680
+            0x10 => vec![0x00, 0xFA],               // MAF: 2.5 g/s
+            0x1F => vec![0x00, 0x3C],               // Runtime: 60s
+            0x21 => vec![0x00, 0x00],               // Distance with MIL: 0 km
+            0x23 => vec![0x13, 0x88],               // Fuel rail gauge: 5000 kPa
+            0x31 => vec![0x27, 0x10],               // Distance since DTC clear: 10000 km
+            0x3C => vec![0x0F, 0xA0],               // Catalyst B1S1: 360°C
+            0x3D => vec![0x0F, 0xA0],               // Catalyst B2S1: 360°C
+            0x3E => vec![0x0B, 0xB8],               // Catalyst B1S2: 260°C
+            0x3F => vec![0x0B, 0xB8],               // Catalyst B2S2: 260°C
+            0x42 => vec![0x38, 0x5C],               // Voltage: 14.428V
+            0x43 => vec![0x00, 0x64],               // Absolute load: 39.2%
+            0x44 => vec![0x80, 0x00],               // Commanded equiv ratio: 1.0
+            0x59 => vec![0x00, 0xC8],               // Fuel rail abs: 200 kPa
+            0x5E => vec![0x00, 0x64],               // Fuel rate: 5.0 L/h
             0x63 => vec![0x03, 0x7F],               // Reference torque: 895 Nm
             // Bitmaps
             0x00 => vec![0xBE, 0x3E, 0xB8, 0x11],  // Supported PIDs 01-20
