@@ -315,6 +315,10 @@ impl Adapter for Elm327Adapter {
     fn info(&self) -> &AdapterInfo {
         &self.info
     }
+
+    fn transport_mut(&mut self) -> Option<&mut dyn Transport> {
+        Some(&mut *self.transport)
+    }
 }
 
 #[cfg(test)]

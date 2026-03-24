@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use crate::error::Obd2Error;
 use crate::protocol::pid::Pid;
 use crate::protocol::service::ServiceRequest;
+use crate::transport::Transport;
 
 pub mod detect;
 pub mod elm327;
@@ -37,6 +38,12 @@ pub trait Adapter: Send {
 
     /// Return adapter information detected during initialization.
     fn info(&self) -> &AdapterInfo;
+
+    /// Mutable access to the underlying transport (if any).
+    /// Returns None for adapters without a real transport (e.g., MockAdapter).
+    fn transport_mut(&mut self) -> Option<&mut dyn Transport> {
+        None
+    }
 }
 
 /// Information about the connected OBD-II adapter hardware.
