@@ -73,6 +73,7 @@ type ChunkBuf = Arc<Mutex<Vec<(f64, Vec<u8>)>>>;
 pub struct LoggingTransport<T: Transport> {
     inner: T,
     writer: Option<BufWriter<File>>,
+    capture_path: Option<PathBuf>,
     start_instant: Instant,
     chunk_buf: ChunkBuf,
 }
@@ -83,6 +84,7 @@ impl<T: Transport> LoggingTransport<T> {
         Self {
             inner,
             writer: None,
+            capture_path: None,
             start_instant: Instant::now(),
             chunk_buf: Arc::new(Mutex::new(Vec::new())),
         }
@@ -98,18 +100,19 @@ impl<T: Transport> LoggingTransport<T> {
         let mut writer = BufWriter::new(file);
         writer.write_all(format_header(metadata).as_bytes())?;
         self.writer = Some(writer);
+        self.capture_path = Some(path.to_path_buf());
         self.start_instant = Instant::now();
         self.install_chunk_observer();
         Ok(())
     }
 
-    /// Stop capturing. Flushes and closes the file.
+    /// Stop capturing. Flushes and closes the file. Returns the path if active.
     pub fn stop_capture(&mut self) -> io::Result<Option<PathBuf>> {
         self.inner.set_chunk_observer(None);
         if let Some(mut w) = self.writer.take() {
             w.flush()?;
         }
-        Ok(None)
+        Ok(self.capture_path.take())
     }
 
     /// Whether capture is currently active.
@@ -189,6 +192,30 @@ impl<T: Transport> Transport for LoggingTransport<T> {
 
     fn set_chunk_observer(&mut self, observer: Option<ChunkObserver>) {
         self.inner.set_chunk_observer(observer);
+    }
+
+    fn start_raw_capture(&mut self, path: &Path, metadata: &CaptureMetadata) -> bool {
+        match self.start_capture(path, metadata) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!("Failed to start raw capture: {}", e);
+                false
+            }
+        }
+    }
+
+    fn stop_raw_capture(&mut self) -> Option<PathBuf> {
+        match self.stop_capture() {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::warn!("Error stopping raw capture: {}", e);
+                None
+            }
+        }
+    }
+
+    fn is_raw_capturing(&self) -> bool {
+        self.is_capturing()
     }
 }
 

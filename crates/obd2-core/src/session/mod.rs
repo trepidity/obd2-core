@@ -381,6 +381,11 @@ impl<A: Adapter> Session<A> {
         self.adapter.info()
     }
 
+    /// Mutable access to the underlying adapter.
+    pub fn adapter_mut(&mut self) -> &mut A {
+        &mut self.adapter
+    }
+
     /// Battery voltage.
     pub async fn battery_voltage(&mut self) -> Result<Option<f64>, Obd2Error> {
         self.adapter.battery_voltage().await

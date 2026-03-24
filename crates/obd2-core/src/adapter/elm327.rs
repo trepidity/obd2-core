@@ -42,6 +42,11 @@ impl Elm327Adapter {
         }
     }
 
+    /// Mutable access to the underlying transport.
+    pub fn transport_mut(&mut self) -> &mut dyn Transport {
+        &mut *self.transport
+    }
+
     /// Send an AT command and read the response.
     async fn send_command(&mut self, cmd: &str) -> Result<String, Obd2Error> {
         debug!(cmd = cmd, "ELM327 send");

@@ -14,6 +14,7 @@ pub mod ble;
 pub use ble::{ADAPTER_NAME_PATTERNS, is_adapter_match};
 pub use logging::{LoggingTransport, CaptureMetadata, parse_raw_capture};
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -65,4 +66,22 @@ pub trait Transport: Send + Sync {
     /// Set a callback invoked on each raw read chunk during `read()`.
     /// Default implementation does nothing.
     fn set_chunk_observer(&mut self, _observer: Option<ChunkObserver>) {}
+
+    /// Start raw protocol capture to a file. Returns true if capture started.
+    /// Default: no-op (returns false). Overridden by LoggingTransport.
+    fn start_raw_capture(&mut self, _path: &Path, _metadata: &logging::CaptureMetadata) -> bool {
+        false
+    }
+
+    /// Stop raw protocol capture. Returns the file path if capture was active.
+    /// Default: no-op (returns None). Overridden by LoggingTransport.
+    fn stop_raw_capture(&mut self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Whether raw protocol capture is currently active.
+    /// Default: false. Overridden by LoggingTransport.
+    fn is_raw_capturing(&self) -> bool {
+        false
+    }
 }
