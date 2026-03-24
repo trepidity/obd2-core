@@ -8,6 +8,7 @@ use tokio_serial::SerialPortBuilderExt;
 use tracing::debug;
 
 use super::Transport;
+use super::ChunkObserver;
 use crate::error::Obd2Error;
 
 /// Serial port transport for ELM327/STN adapters.
@@ -19,6 +20,7 @@ pub struct SerialTransport {
     port: tokio_serial::SerialStream,
     port_name: String,
     read_buf: Vec<u8>,
+    chunk_observer: Option<ChunkObserver>,
 }
 
 impl SerialTransport {
@@ -32,6 +34,7 @@ impl SerialTransport {
             port,
             port_name: port_name.to_string(),
             read_buf: vec![0u8; 4096],
+            chunk_observer: None,
         })
     }
 
@@ -77,6 +80,11 @@ impl Transport for SerialTransport {
                 }
                 Ok(Ok(n)) => {
                     result.extend_from_slice(&self.read_buf[..n]);
+                    if let Some(ref observer) = self.chunk_observer {
+                        if let Ok(f) = observer.lock() {
+                            f(&self.read_buf[..n]);
+                        }
+                    }
                     // The '>' prompt is the only reliable end-of-response
                     // marker for ELM327. Do NOT break on \r or \n — the
                     // adapter sends status lines like "SEARCHING...\r"
@@ -117,6 +125,10 @@ impl Transport for SerialTransport {
 
     fn name(&self) -> &str {
         &self.port_name
+    }
+
+    fn set_chunk_observer(&mut self, observer: Option<ChunkObserver>) {
+        self.chunk_observer = observer;
     }
 }
 

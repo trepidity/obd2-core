@@ -31,6 +31,8 @@ btleplug = { version = "0.11", optional = true }
 futures = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+tempfile = "3"

@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::Transport;
+use super::ChunkObserver;
 use crate::error::Obd2Error;
 
 // ── GATT UUIDs ──────────────────────────────────────────────────────────────
@@ -137,6 +138,7 @@ pub struct BleTransport {
     rx: mpsc::Receiver<Vec<u8>>,
     /// Background notification listener handle.
     _listener: tokio::task::JoinHandle<()>,
+    chunk_observer: Option<ChunkObserver>,
 }
 
 impl BleTransport {
@@ -209,6 +211,7 @@ impl BleTransport {
             device_name: name,
             rx,
             _listener: listener,
+            chunk_observer: None,
         })
     }
 
@@ -337,6 +340,11 @@ impl Transport for BleTransport {
             match tokio::time::timeout(BLE_READ_TIMEOUT, self.rx.recv()).await {
                 Ok(Some(data)) => {
                     result.extend_from_slice(&data);
+                    if let Some(ref observer) = self.chunk_observer {
+                        if let Ok(f) = observer.lock() {
+                            f(&data);
+                        }
+                    }
                     // Check for ELM327 prompt character '>'
                     if result.contains(&b'>') {
                         break;
@@ -368,6 +376,10 @@ impl Transport for BleTransport {
 
     fn name(&self) -> &str {
         &self.device_name
+    }
+
+    fn set_chunk_observer(&mut self, observer: Option<ChunkObserver>) {
+        self.chunk_observer = observer;
     }
 }
 

@@ -5,15 +5,23 @@
 //! anyone can implement it for custom transports.
 
 pub mod mock;
+pub mod logging;
 #[cfg(feature = "serial")]
 pub mod serial;
 #[cfg(feature = "ble")]
 pub mod ble;
 #[cfg(feature = "ble")]
 pub use ble::{ADAPTER_NAME_PATTERNS, is_adapter_match};
+pub use logging::{LoggingTransport, CaptureMetadata, parse_raw_capture};
+
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use crate::error::Obd2Error;
+
+/// Callback invoked on each raw read chunk before response assembly.
+/// Used by LoggingTransport to record transport-level reads.
+pub type ChunkObserver = Arc<Mutex<dyn Fn(&[u8]) + Send>>;
 
 /// Physical connection to an OBD-II adapter.
 ///
@@ -36,6 +44,7 @@ use crate::error::Obd2Error;
 ///     async fn read(&mut self) -> Result<Vec<u8>, Obd2Error> { Ok(vec![]) }
 ///     async fn reset(&mut self) -> Result<(), Obd2Error> { Ok(()) }
 ///     fn name(&self) -> &str { "my-transport" }
+///     fn set_chunk_observer(&mut self, _observer: Option<obd2_core::transport::ChunkObserver>) {}
 /// }
 /// ```
 #[async_trait]
@@ -52,4 +61,8 @@ pub trait Transport: Send + Sync {
 
     /// Human-readable transport name for logging.
     fn name(&self) -> &str;
+
+    /// Set a callback invoked on each raw read chunk during `read()`.
+    /// Default implementation does nothing.
+    fn set_chunk_observer(&mut self, _observer: Option<ChunkObserver>) {}
 }
