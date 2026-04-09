@@ -15,6 +15,11 @@ pub use service::{
     DiagSession, ActuatorCommand, ReadinessStatus, MonitorStatus,
     TestResult, VehicleInfo, ServiceRequest, O2TestResult, O2SensorLocation,
 };
+pub use codec::{
+    BusFamily, CanFrame, CanFrameKind, DecodedFrame, IsoKLineFrame, J1850Frame,
+    decode_can_headers_off, decode_can_headers_on, decode_frame,
+    decode_iso_kline_headers_on, decode_j1850_headers_on,
+};
 pub use j1939::{
     Pgn, J1939Dtc,
     Eec1, Ccvs, Et1, Eflp1, Lfe,

@@ -7,7 +7,7 @@ obd2-core is the shared foundation for [obd2-dash](https://github.com/trepidity/
 ## Features
 
 - **All 10 OBD-II diagnostic modes** — standard PIDs, freeze frame, DTCs (stored/pending/permanent), O2 monitoring, vehicle info, plus extended modes (session control, security access, actuator control)
-- **Protocol-agnostic** — J1850 VPW/PWM, ISO 9141, KWP2000, CAN 11/29-bit, and J1939 through a unified API
+- **Protocol-agnostic on the supported pre-1.0 surface** — J1850 VPW/PWM, ISO 9141, KWP2000, and CAN 11/29-bit through a unified session-first API
 - **Pluggable architecture** — open `Transport` and `Adapter` traits for custom hardware
 - **Vehicle spec system** — embedded specs + runtime YAML loading with VIN-based matching
 - **Diagnostic intelligence** — DTC enrichment with ~200 universal codes, diagnostic rules, known issue detection, threshold alerting
@@ -78,7 +78,7 @@ obd2-core/src/
 
 ## Session API
 
-`Session` is the primary entry point. It wraps an `Adapter` and provides high-level methods:
+`Session` is the primary entry point. It wraps an `Adapter` and provides the supported high-level pre-`1.0` API:
 
 ```rust
 let mut session = Session::new(adapter);
@@ -96,21 +96,48 @@ let supported = session.supported_pids().await?;
 let stored = session.read_dtcs().await?;             // Confirmed codes
 let pending = session.read_pending_dtcs().await?;    // Not yet confirmed
 let permanent = session.read_permanent_dtcs().await?;// Cannot be cleared
+let all = session.read_all_dtcs().await?;            // Deduplicated + enriched
 session.clear_dtcs().await?;                         // Mode 04 — resets monitors
+session.clear_dtcs_on_module(ModuleId::new("ecm")).await?;
+
+// Freeze frame / readiness / monitoring
+let freeze = session.read_freeze_frame(Pid::ENGINE_RPM, 0).await?;
+let readiness = session.read_readiness().await?;
+let monitor_results = session.read_test_results(0x01).await?;
 
 // Enhanced PIDs (Mode 22 — manufacturer-specific)
 let boost = session.read_enhanced(0x0124, ModuleId::new("ecm")).await?;
 let pids = session.module_pids(ModuleId::new("tcm"));
 
+// Diagnostic session operations
+session.enter_diagnostic_session(DiagSession::Extended, ModuleId::new("tcm")).await?;
+session.security_access(ModuleId::new("tcm"), &Box::new(|seed| seed.to_vec())).await?;
+session.actuator_control(0x1196, ModuleId::new("tcm"), &ActuatorCommand::Activate).await?;
+session.end_diagnostic_session(ModuleId::new("tcm")).await?;
+
 // O2 Sensor Monitoring (Mode 05)
 let results = session.read_o2_monitoring(0x01).await?;
 let all = session.read_all_o2_monitoring().await?;
+
+// Vehicle information
+let info = session.read_vehicle_info().await?;
 
 // Battery voltage (adapter-level)
 let voltage = session.battery_voltage().await?;
 
 // Raw escape hatch
 let data = session.raw_request(0x09, &[0x02], Target::Broadcast).await?;
+```
+
+J1939 APIs still exist in the crate as an unfinished workstream, but they are not part of the supported non-`1.0` integration surface yet. Use [docs/INTEGRATION.md](/Users/jared/Projects/HaulLogic/obd2-core/docs/INTEGRATION.md) as the authoritative integration guide.
+
+In debug builds, raw transport capture is enabled by default. `Session::initialize()`
+starts a `.obd2raw` capture in `./raw-captures/`, and `identify_vehicle()` renames
+the active file to include the VIN once it is known. You can change or disable this:
+
+```rust
+session.set_raw_capture_enabled(false);
+session.set_raw_capture_directory("captures");
 ```
 
 ## Polling
@@ -127,8 +154,15 @@ let config = PollConfig {
     read_voltage: true,
 };
 
-// Returns a handle for control and a receiver for events
-let (handle, mut rx, _) = poller::start_poll_loop(config);
+let adapter = MockAdapter::new();
+let mut session = Session::new(adapter);
+session.initialize().await?;
+
+// Returns a handle for control and a receiver for events.
+// Session drives the poll cycle so routing, discovery, and lifecycle rules stay enforced.
+let (handle, _rx, _) = poller::start_poll_loop(config.clone());
+let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+poller::execute_poll_cycle(&mut session, &config, &tx, None).await;
 
 while let Some(event) = rx.recv().await {
     match event {

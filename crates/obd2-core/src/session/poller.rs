@@ -132,54 +132,28 @@ pub fn start_poll_loop(
     (handle, event_rx, config)
 }
 
-/// Execute one poll cycle: read all PIDs and emit events.
-///
-/// Called by Session in its poll loop. This is NOT async over the adapter
-/// directly -- Session calls this with the adapter.
+/// Execute one poll cycle through the session-owned API.
 pub async fn execute_poll_cycle<A: crate::adapter::Adapter>(
-    adapter: &mut A,
+    session: &mut super::Session<A>,
     config: &PollConfig,
     event_tx: &mpsc::Sender<PollEvent>,
-    spec: Option<&crate::vehicle::VehicleSpec>,
+    spec_override: Option<&crate::vehicle::VehicleSpec>,
 ) {
-    use crate::protocol::service::ServiceRequest;
-    use crate::protocol::enhanced::ReadingSource;
-    use std::time::Instant;
-
     for &pid in &config.pids {
-        let req = ServiceRequest::read_pid(pid);
-        match adapter.request(&req).await {
-            Ok(data) => {
-                match pid.parse(&data) {
-                    Ok(value) => {
-                        let reading = crate::protocol::enhanced::Reading {
-                            value: value.clone(),
-                            unit: pid.unit(),
-                            timestamp: Instant::now(),
-                            raw_bytes: data,
-                            source: ReadingSource::Live,
-                        };
+        match session.read_pid(pid).await {
+            Ok(reading) => {
+                let value = reading.value.clone();
+                let _ = event_tx.send(PollEvent::Reading {
+                    pid,
+                    reading,
+                }).await;
 
-                        // Emit reading
-                        let _ = event_tx.send(PollEvent::Reading {
-                            pid,
-                            reading: reading.clone(),
-                        }).await;
-
-                        // Check threshold (BR-5.2)
-                        if let crate::protocol::enhanced::Value::Scalar(v) = &value {
-                            if let Some(result) = super::threshold::evaluate_pid_threshold(
-                                spec, pid, *v,
-                            ) {
-                                let _ = event_tx.send(PollEvent::Alert(result)).await;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = event_tx.send(PollEvent::Error {
-                            pid: Some(pid),
-                            error: e.to_string(),
-                        }).await;
+                if let crate::protocol::enhanced::Value::Scalar(v) = &value {
+                    if let Some(result) = spec_override
+                        .and_then(|spec| super::threshold::evaluate_pid_threshold(Some(spec), pid, *v))
+                        .or_else(|| session.evaluate_threshold(pid, *v))
+                    {
+                        let _ = event_tx.send(PollEvent::Alert(result)).await;
                     }
                 }
             }
@@ -197,7 +171,7 @@ pub async fn execute_poll_cycle<A: crate::adapter::Adapter>(
 
     // Battery voltage
     if config.read_voltage {
-        if let Ok(Some(v)) = adapter.battery_voltage().await {
+        if let Ok(Some(v)) = session.battery_voltage().await {
             let _ = event_tx.send(PollEvent::Voltage(v)).await;
         }
     }
@@ -206,8 +180,8 @@ pub async fn execute_poll_cycle<A: crate::adapter::Adapter>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::Adapter;
     use crate::adapter::mock::MockAdapter;
+    use crate::session::Session;
 
     #[test]
     fn test_poll_config_defaults() {
@@ -238,13 +212,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_poll_cycle() {
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
+        let adapter = MockAdapter::new();
+        let mut session = Session::new(adapter);
+        session.initialize().await.unwrap();
 
         let config = PollConfig::new(vec![Pid::ENGINE_RPM, Pid::COOLANT_TEMP]);
         let (tx, mut rx) = mpsc::channel(64);
 
-        execute_poll_cycle(&mut adapter, &config, &tx, None).await;
+        execute_poll_cycle(&mut session, &config, &tx, None).await;
 
         // Should receive at least 2 readings + 1 voltage
         let mut count = 0;
@@ -318,13 +293,14 @@ mod tests {
             enhanced_pids: vec![],
         };
 
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-
         let config = PollConfig::new(vec![Pid::COOLANT_TEMP]).with_voltage(false);
         let (tx, mut rx) = mpsc::channel(64);
 
-        execute_poll_cycle(&mut adapter, &config, &tx, Some(&spec)).await;
+        let adapter = MockAdapter::new();
+        let mut session = Session::new(adapter);
+        session.initialize().await.unwrap();
+
+        execute_poll_cycle(&mut session, &config, &tx, Some(&spec)).await;
 
         // MockAdapter returns 50 deg C for coolant which is below warning threshold of 60
         // So we should NOT get an alert

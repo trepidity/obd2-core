@@ -208,17 +208,17 @@ async fn test_threshold_evaluation() {
 /// Polling cycle produces events
 #[tokio::test]
 async fn test_polling_cycle() {
-    use obd2_core::adapter::Adapter;
     use obd2_core::session::poller::{execute_poll_cycle, PollConfig, PollEvent};
     use tokio::sync::mpsc;
 
-    let mut adapter = MockAdapter::new();
-    adapter.initialize().await.unwrap();
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+    session.initialize().await.unwrap();
 
     let config = PollConfig::new(vec![Pid::ENGINE_RPM, Pid::COOLANT_TEMP, Pid::VEHICLE_SPEED]);
     let (tx, mut rx) = mpsc::channel(64);
 
-    execute_poll_cycle(&mut adapter, &config, &tx, None).await;
+    execute_poll_cycle(&mut session, &config, &tx, None).await;
 
     let mut readings = 0;
     let mut voltage = false;
@@ -467,7 +467,6 @@ async fn test_diagnostic_rule_range_trigger() {
 /// Polling cycle with threshold alerting
 #[tokio::test]
 async fn test_polling_cycle_threshold_integration() {
-    use obd2_core::adapter::Adapter;
     use obd2_core::session::poller::{execute_poll_cycle, PollConfig, PollEvent};
     use obd2_core::vehicle::{
         CommunicationSpec, EngineSpec, NamedThreshold, SpecIdentity, Threshold, ThresholdSet,
@@ -529,13 +528,14 @@ async fn test_polling_cycle_threshold_integration() {
         enhanced_pids: vec![],
     };
 
-    let mut adapter = MockAdapter::new();
-    adapter.initialize().await.unwrap();
+    let adapter = MockAdapter::new();
+    let mut session = Session::new(adapter);
+    session.initialize().await.unwrap();
 
     let config = PollConfig::new(vec![Pid::COOLANT_TEMP]).with_voltage(false);
     let (tx, mut rx) = mpsc::channel(64);
 
-    execute_poll_cycle(&mut adapter, &config, &tx, Some(&spec)).await;
+    execute_poll_cycle(&mut session, &config, &tx, Some(&spec)).await;
 
     let mut got_alert = false;
     let mut got_reading = false;

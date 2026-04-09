@@ -79,6 +79,17 @@ pub trait Transport: Send + Sync {
         None
     }
 
+    /// Rename the active raw protocol capture file.
+    /// Returns the new file path if the rename succeeded.
+    /// Default: no-op (returns None). Overridden by LoggingTransport.
+    fn rename_raw_capture(&mut self, _path: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// Write an annotation entry into the active raw capture.
+    /// Default: no-op. Overridden by LoggingTransport.
+    fn annotate_raw_capture(&mut self, _note: &str) {}
+
     /// Whether raw protocol capture is currently active.
     /// Default: false. Overridden by LoggingTransport.
     fn is_raw_capturing(&self) -> bool {

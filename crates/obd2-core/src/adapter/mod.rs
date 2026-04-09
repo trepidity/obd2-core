@@ -11,10 +11,88 @@ use crate::error::Obd2Error;
 use crate::protocol::pid::Pid;
 use crate::protocol::service::ServiceRequest;
 use crate::transport::Transport;
+use crate::vehicle::{KLineInit, PhysicalAddress, Protocol};
 
 pub mod detect;
 pub mod elm327;
 pub mod mock;
+
+/// Physical request target resolved from discovery/profile data.
+#[derive(Debug, Clone)]
+pub enum PhysicalTarget {
+    Broadcast,
+    Addressed(PhysicalAddress),
+}
+
+/// Diagnostic request with resolved physical routing.
+#[derive(Debug, Clone)]
+pub struct RoutedRequest {
+    pub service_id: u8,
+    pub data: Vec<u8>,
+    pub target: PhysicalTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolSelectionSource {
+    AutoDetect,
+    ExplicitProbe,
+    SpecPreference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeResult {
+    Success,
+    NoResponse,
+    BusInitFailure,
+    BusError,
+    CanError,
+    UnableToConnect,
+    UnsupportedProtocol,
+    AdapterFault,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeAttempt {
+    pub protocol: Protocol,
+    pub source: ProtocolSelectionSource,
+    pub result: ProbeResult,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterEventKind {
+    Reset,
+    ProtocolSearching,
+    ProtocolSelected(Protocol),
+    HeaderChanged { header: String },
+    HeaderReset { header: String },
+    NullBytesFiltered { count: usize },
+    SearchingDisplayed,
+    BusBusy,
+    BusError,
+    CanError,
+    DataError,
+    RxError,
+    Stopped,
+    Err94,
+    LowVoltageReset,
+    UnknownCommand,
+    UnsupportedProtocol,
+    RecoveryAction { action: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterEvent {
+    pub kind: AdapterEventKind,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InitializationReport {
+    pub info: AdapterInfo,
+    pub probe_attempts: Vec<ProbeAttempt>,
+    pub events: Vec<AdapterEvent>,
+}
 
 /// Protocol interpreter for OBD-II communication.
 ///
@@ -24,11 +102,28 @@ pub mod mock;
 pub trait Adapter: Send {
     /// Initialize the adapter: reset, detect chipset, configure protocol.
     /// Returns information about the detected adapter hardware.
-    async fn initialize(&mut self) -> Result<AdapterInfo, Obd2Error>;
+    async fn initialize(&mut self) -> Result<InitializationReport, Obd2Error>;
 
     /// Send a diagnostic service request and return the raw response data bytes.
     /// Response should NOT include the service ID echo or padding — just data.
     async fn request(&mut self, req: &ServiceRequest) -> Result<Vec<u8>, Obd2Error>;
+
+    /// Send a diagnostic request with resolved physical routing information.
+    async fn routed_request(&mut self, req: &RoutedRequest) -> Result<Vec<u8>, Obd2Error> {
+        let target = match &req.target {
+            PhysicalTarget::Broadcast => crate::protocol::service::Target::Broadcast,
+            PhysicalTarget::Addressed(_) => {
+                return Err(Obd2Error::Adapter(
+                    "adapter does not support addressed routed requests".into(),
+                ));
+            }
+        };
+        self.request(&ServiceRequest {
+            service_id: req.service_id,
+            data: req.data.clone(),
+            target,
+        }).await
+    }
 
     /// Query which standard PIDs are supported (Mode 01 PID 00/20/40/60 bitmaps).
     async fn supported_pids(&mut self) -> Result<HashSet<Pid>, Obd2Error>;
@@ -38,6 +133,11 @@ pub trait Adapter: Send {
 
     /// Return adapter information detected during initialization.
     fn info(&self) -> &AdapterInfo;
+
+    /// Drain adapter events observed since the previous call.
+    fn drain_events(&mut self) -> Vec<AdapterEvent> {
+        Vec::new()
+    }
 
     /// Mutable access to the underlying transport (if any).
     /// Returns None for adapters without a real transport (e.g., MockAdapter).
@@ -85,6 +185,33 @@ pub struct Capabilities {
     pub battery_voltage: bool,
     /// Supports adaptive timing (AT AT).
     pub adaptive_timing: bool,
+    /// Supports K-line initialization control.
+    pub kline_init: bool,
+    /// Supports K-line wakeup configuration.
+    pub kline_wakeup: bool,
+    /// Supports CAN receive filtering.
+    pub can_filtering: bool,
+    /// Supports CAN flow control configuration.
+    pub can_flow_control: bool,
+    /// Supports CAN extended addressing.
+    pub can_extended_addressing: bool,
+    /// Supports CAN silent mode configuration.
+    pub can_silent_mode: bool,
 }
 
-
+impl Protocol {
+    pub fn from_elm_code(code: char) -> Option<Self> {
+        match code {
+            '1' => Some(Self::J1850Pwm),
+            '2' => Some(Self::J1850Vpw),
+            '3' => Some(Self::Iso9141(KLineInit::SlowInit)),
+            '4' => Some(Self::Kwp2000(KLineInit::SlowInit)),
+            '5' => Some(Self::Kwp2000(KLineInit::FastInit)),
+            '6' => Some(Self::Can11Bit500),
+            '7' => Some(Self::Can29Bit500),
+            '8' => Some(Self::Can11Bit250),
+            '9' => Some(Self::Can29Bit250),
+            _ => None,
+        }
+    }
+}

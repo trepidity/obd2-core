@@ -1,51 +1,12 @@
 //! Additional OBD-II diagnostic mode implementations.
 
-use crate::adapter::Adapter;
 use crate::error::Obd2Error;
 use crate::protocol::dtc::{Dtc, DtcStatus};
-use crate::protocol::enhanced::{Reading, ReadingSource};
-use crate::protocol::pid::Pid;
 use crate::protocol::service::{
-    MonitorStatus, O2SensorLocation, O2TestResult, ReadinessStatus, ServiceRequest, Target,
-    TestResult, VehicleInfo,
+    MonitorStatus, ReadinessStatus, TestResult,
 };
-use crate::vehicle::VehicleSpec;
-use std::time::Instant;
-
-/// Mode 02: Read freeze frame data for a PID.
-pub async fn read_freeze_frame<A: Adapter>(
-    adapter: &mut A,
-    pid: Pid,
-    frame: u8,
-) -> Result<Reading, Obd2Error> {
-    let req = ServiceRequest {
-        service_id: 0x02,
-        data: vec![pid.0, frame],
-        target: Target::Broadcast,
-    };
-    let data = adapter.request(&req).await?;
-    let value = pid.parse(&data)?;
-    Ok(Reading {
-        value,
-        unit: pid.unit(),
-        timestamp: Instant::now(),
-        raw_bytes: data,
-        source: ReadingSource::FreezeFrame,
-    })
-}
-
-/// Mode 06: Read on-board monitoring test results.
-pub async fn read_test_results<A: Adapter>(
-    adapter: &mut A,
-    test_id: u8,
-) -> Result<Vec<TestResult>, Obd2Error> {
-    let req = ServiceRequest {
-        service_id: 0x06,
-        data: vec![test_id],
-        target: Target::Broadcast,
-    };
-    let data = adapter.request(&req).await?;
-
+/// Decode Mode 06 on-board monitoring test results.
+pub(crate) fn decode_test_results(data: &[u8]) -> Vec<TestResult> {
     // Mode 06 response: [TID, COMP_ID, test_val_hi, test_val_lo, min_hi, min_lo, max_hi, max_lo]
     let mut results = Vec::new();
     let mut i = 0;
@@ -69,67 +30,11 @@ pub async fn read_test_results<A: Adapter>(
         });
         i += 8;
     }
-    Ok(results)
-}
-
-/// Mode 05: Read O2 sensor monitoring test results (non-CAN vehicles).
-///
-/// Queries a specific TID across all O2 sensor locations. On CAN vehicles,
-/// this data is available through Mode 06 instead.
-pub async fn read_o2_monitoring<A: Adapter>(
-    adapter: &mut A,
-    test_id: u8,
-) -> Result<Vec<O2TestResult>, Obd2Error> {
-    let mut results = Vec::new();
-
-    // Query each sensor location (0x01..=0x08)
-    for sensor_byte in 0x01..=0x08u8 {
-        let req = ServiceRequest {
-            service_id: 0x05,
-            data: vec![test_id, sensor_byte],
-            target: Target::Broadcast,
-        };
-        match adapter.request(&req).await {
-            Ok(data) if data.len() >= 2 => {
-                let Some(sensor) = O2SensorLocation::from_byte(sensor_byte) else {
-                    continue;
-                };
-                let raw_value = u16::from_be_bytes([data[0], data[1]]);
-                let (test_name, unit, convert) =
-                    crate::protocol::service::o2_test_info(test_id);
-                results.push(O2TestResult {
-                    test_id,
-                    test_name,
-                    sensor,
-                    value: convert(raw_value),
-                    unit,
-                });
-            }
-            // Sensor not present or not supported -- skip
-            _ => continue,
-        }
-    }
-
-    Ok(results)
-}
-
-/// Mode 05: Read all standard O2 monitoring TIDs (0x01-0x09) across all sensors.
-pub async fn read_all_o2_monitoring<A: Adapter>(
-    adapter: &mut A,
-) -> Result<Vec<O2TestResult>, Obd2Error> {
-    let mut results = Vec::new();
-    for tid in 0x01..=0x09u8 {
-        match read_o2_monitoring(adapter, tid).await {
-            Ok(mut tid_results) => results.append(&mut tid_results),
-            Err(Obd2Error::NoData) => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(results)
+    results
 }
 
 /// Decode readiness status from Mode 01 PID 01 response bytes.
-pub fn decode_readiness(data: &[u8]) -> Result<ReadinessStatus, Obd2Error> {
+pub(crate) fn decode_readiness(data: &[u8]) -> Result<ReadinessStatus, Obd2Error> {
     if data.len() < 4 {
         return Err(Obd2Error::ParseError(format!(
             "readiness status needs 4 bytes, got {}",
@@ -194,154 +99,8 @@ pub fn decode_readiness(data: &[u8]) -> Result<ReadinessStatus, Obd2Error> {
     })
 }
 
-/// Mode 09: Read full vehicle information (VIN + CALIDs + CVNs + ECU name).
-pub async fn read_full_vehicle_info<A: Adapter>(
-    adapter: &mut A,
-) -> Result<VehicleInfo, Obd2Error> {
-    // Read VIN (InfoType 02)
-    let vin_req = ServiceRequest::read_vin();
-    let vin_data = adapter.request(&vin_req).await?;
-    let vin: String = vin_data
-        .iter()
-        .filter(|&&b| (0x20..=0x7E).contains(&b))
-        .map(|&b| b as char)
-        .take(17)
-        .collect();
-
-    // Try to read Calibration ID (InfoType 04)
-    let cal_ids = match adapter
-        .request(&ServiceRequest {
-            service_id: 0x09,
-            data: vec![0x04],
-            target: Target::Broadcast,
-        })
-        .await
-    {
-        Ok(data) => {
-            let cal_str: String = data
-                .iter()
-                .filter(|&&b| (0x20..=0x7E).contains(&b))
-                .map(|&b| b as char)
-                .collect();
-            if cal_str.is_empty() {
-                vec![]
-            } else {
-                vec![cal_str]
-            }
-        }
-        Err(_) => vec![],
-    };
-
-    // Try to read CVN (InfoType 06)
-    let cvns = match adapter
-        .request(&ServiceRequest {
-            service_id: 0x09,
-            data: vec![0x06],
-            target: Target::Broadcast,
-        })
-        .await
-    {
-        Ok(data) if data.len() >= 4 => {
-            vec![u32::from_be_bytes([data[0], data[1], data[2], data[3]])]
-        }
-        _ => vec![],
-    };
-
-    // Try to read ECU name (InfoType 0A)
-    let ecu_name = match adapter
-        .request(&ServiceRequest {
-            service_id: 0x09,
-            data: vec![0x0A],
-            target: Target::Broadcast,
-        })
-        .await
-    {
-        Ok(data) => {
-            let name: String = data
-                .iter()
-                .filter(|&&b| (0x20..=0x7E).contains(&b))
-                .map(|&b| b as char)
-                .collect();
-            if name.is_empty() {
-                None
-            } else {
-                Some(name)
-            }
-        }
-        Err(_) => None,
-    };
-
-    Ok(VehicleInfo {
-        vin,
-        calibration_ids: cal_ids,
-        cvns,
-        ecu_name,
-    })
-}
-
-/// Clear DTCs on a specific module (GM Mode 14 / standard Mode 04 with targeting).
-pub async fn clear_dtcs_on_module<A: Adapter>(
-    adapter: &mut A,
-    module: &str,
-) -> Result<(), Obd2Error> {
-    tracing::warn!(module = module, "clearing DTCs on specific module");
-    let req = ServiceRequest {
-        service_id: 0x04,
-        data: vec![],
-        target: Target::Module(module.to_string()),
-    };
-    adapter.request(&req).await?;
-    Ok(())
-}
-
-/// Read all DTC types from all accessible sources, deduplicate and enrich.
-/// Implements BR-4.1: stored + pending + permanent, then per-module if spec available.
-pub async fn read_all_dtcs<A: Adapter>(
-    adapter: &mut A,
-    spec: Option<&VehicleSpec>,
-) -> Result<Vec<Dtc>, Obd2Error> {
-    let mut all_dtcs = Vec::new();
-
-    // Mode 03: Stored DTCs (broadcast)
-    if let Ok(data) = adapter.request(&ServiceRequest::read_dtcs()).await {
-        all_dtcs.extend(decode_dtc_bytes(&data, DtcStatus::Stored));
-    }
-
-    // Mode 07: Pending DTCs
-    if let Ok(data) = adapter
-        .request(&ServiceRequest {
-            service_id: 0x07,
-            data: vec![],
-            target: Target::Broadcast,
-        })
-        .await
-    {
-        all_dtcs.extend(decode_dtc_bytes(&data, DtcStatus::Pending));
-    }
-
-    // Mode 0A: Permanent DTCs
-    if let Ok(data) = adapter
-        .request(&ServiceRequest {
-            service_id: 0x0A,
-            data: vec![],
-            target: Target::Broadcast,
-        })
-        .await
-    {
-        all_dtcs.extend(decode_dtc_bytes(&data, DtcStatus::Permanent));
-    }
-
-    // Deduplicate
-    super::diagnostics::dedup_dtcs(&mut all_dtcs);
-
-    // Enrich from spec
-    super::diagnostics::enrich_dtcs(&mut all_dtcs, spec);
-
-    Ok(all_dtcs)
-}
-
 /// Decode DTC bytes from a Mode 03/07/0A response.
-fn decode_dtc_bytes(data: &[u8], status: DtcStatus) -> Vec<Dtc> {
+pub(crate) fn decode_dtc_bytes(data: &[u8], status: DtcStatus) -> Vec<Dtc> {
     let mut dtcs = Vec::new();
     let mut i = 0;
     while i + 1 < data.len() {
@@ -360,7 +119,6 @@ fn decode_dtc_bytes(data: &[u8], status: DtcStatus) -> Vec<Dtc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::mock::MockAdapter;
 
     #[test]
     fn test_decode_readiness_diesel() {
@@ -394,35 +152,6 @@ mod tests {
     fn test_decode_readiness_insufficient_bytes() {
         let data = [0x00, 0x00]; // only 2 bytes
         assert!(decode_readiness(&data).is_err());
-    }
-
-    #[tokio::test]
-    async fn test_read_freeze_frame() {
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-        // MockAdapter returns NoData for Mode 02, so this will error
-        let result = read_freeze_frame(&mut adapter, Pid::ENGINE_RPM, 0).await;
-        // Verify it doesn't panic -- MockAdapter doesn't support Mode 02
-        assert!(result.is_ok() || result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_read_all_dtcs_empty() {
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-        let dtcs = read_all_dtcs(&mut adapter, None).await.unwrap();
-        assert!(dtcs.is_empty()); // no DTCs set on mock
-    }
-
-    #[tokio::test]
-    async fn test_read_all_dtcs_with_dtcs() {
-        let mut adapter = MockAdapter::new();
-        adapter.set_dtcs(vec![Dtc::from_code("P0420"), Dtc::from_code("P0171")]);
-        adapter.initialize().await.unwrap();
-        let dtcs = read_all_dtcs(&mut adapter, None).await.unwrap();
-        assert!(dtcs.len() >= 2);
-        // Should have universal descriptions (populated by Dtc::from_bytes)
-        assert!(dtcs.iter().any(|d| d.description.is_some()));
     }
 
     #[test]
@@ -481,24 +210,6 @@ mod tests {
         assert!(evap.complete); // bit 2 NOT set = complete
     }
 
-    #[tokio::test]
-    async fn test_read_full_vehicle_info() {
-        let mut adapter = MockAdapter::with_vin("1GCHK23224F000001");
-        adapter.initialize().await.unwrap();
-        let info = read_full_vehicle_info(&mut adapter).await.unwrap();
-        assert_eq!(info.vin, "1GCHK23224F000001");
-    }
-
-    #[tokio::test]
-    async fn test_clear_dtcs_on_module() {
-        let mut adapter = MockAdapter::new();
-        adapter.set_dtcs(vec![Dtc::from_code("P0420")]);
-        adapter.initialize().await.unwrap();
-        // MockAdapter handles Mode 04 regardless of target
-        let result = clear_dtcs_on_module(&mut adapter, "ecm").await;
-        assert!(result.is_ok());
-    }
-
     #[test]
     fn test_decode_dtc_bytes_empty() {
         let data: [u8; 0] = [];
@@ -513,40 +224,16 @@ mod tests {
         assert!(dtcs.is_empty());
     }
 
-    #[tokio::test]
-    async fn test_read_o2_monitoring_single_tid() {
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-        // TID 0x01: Rich-to-Lean Threshold Voltage
-        let results = read_o2_monitoring(&mut adapter, 0x01).await.unwrap();
-        // MockAdapter returns data for sensors 0x01 and 0x02
-        assert_eq!(results.len(), 2);
+    #[test]
+    fn test_decode_test_results() {
+        let data = [0x01, 0x10, 0x00, 0x64, 0x00, 0x32, 0x00, 0x96];
+        let results = decode_test_results(&data);
+        assert_eq!(results.len(), 1);
         assert_eq!(results[0].test_id, 0x01);
-        assert_eq!(results[0].test_name, "Rich-to-Lean Threshold Voltage");
-        assert_eq!(results[0].unit, "V");
-        // value = 0x005A = 90, * 0.005 = 0.45V
-        assert!((results[0].value - 0.45).abs() < 0.001);
-        assert_eq!(
-            results[0].sensor,
-            crate::protocol::service::O2SensorLocation::Bank1Sensor1
-        );
-        assert_eq!(
-            results[1].sensor,
-            crate::protocol::service::O2SensorLocation::Bank1Sensor2
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_all_o2_monitoring() {
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-        let results = read_all_o2_monitoring(&mut adapter).await.unwrap();
-        // 9 TIDs * 2 sensors each = 18 results
-        assert_eq!(results.len(), 18);
-        // Verify different TIDs present
-        assert!(results.iter().any(|r| r.test_id == 0x01));
-        assert!(results.iter().any(|r| r.test_id == 0x05));
-        assert!(results.iter().any(|r| r.test_id == 0x09));
+        assert_eq!(results[0].value, 100.0);
+        assert_eq!(results[0].min, Some(50.0));
+        assert_eq!(results[0].max, Some(150.0));
+        assert!(results[0].passed);
     }
 
     #[test]

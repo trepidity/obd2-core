@@ -5,6 +5,7 @@
 
 use std::io::{self, Write as IoWrite, BufWriter};
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -115,6 +116,38 @@ impl<T: Transport> LoggingTransport<T> {
         Ok(self.capture_path.take())
     }
 
+    /// Rename the active capture file and continue appending to the new path.
+    pub fn rename_capture(&mut self, new_path: &Path) -> io::Result<Option<PathBuf>> {
+        let Some(current_path) = self.capture_path.clone() else {
+            return Ok(None);
+        };
+
+        if current_path == new_path {
+            return Ok(Some(current_path));
+        }
+
+        if let Some(parent) = new_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        if let Some(ref mut w) = self.writer {
+            w.flush()?;
+        }
+        self.writer = None;
+
+        std::fs::rename(&current_path, new_path)?;
+
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(new_path)?;
+        self.writer = Some(BufWriter::new(file));
+        self.capture_path = Some(new_path.to_path_buf());
+        self.install_chunk_observer();
+
+        Ok(Some(new_path.to_path_buf()))
+    }
+
     /// Whether capture is currently active.
     pub fn is_capturing(&self) -> bool {
         self.writer.is_some()
@@ -140,6 +173,13 @@ impl<T: Transport> LoggingTransport<T> {
         let ts = self.elapsed_secs();
         if let Some(ref mut w) = self.writer {
             let _ = writeln!(w, "{:.3} {} {}", ts, direction, escape_bytes(data));
+        }
+    }
+
+    fn log_annotation(&mut self, note: &str) {
+        let ts = self.elapsed_secs();
+        if let Some(ref mut w) = self.writer {
+            let _ = writeln!(w, "{:.3} N {}", ts, note);
         }
     }
 
@@ -212,6 +252,20 @@ impl<T: Transport> Transport for LoggingTransport<T> {
                 None
             }
         }
+    }
+
+    fn rename_raw_capture(&mut self, path: &Path) -> Option<PathBuf> {
+        match self.rename_capture(path) {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::warn!("Error renaming raw capture: {}", e);
+                None
+            }
+        }
+    }
+
+    fn annotate_raw_capture(&mut self, note: &str) {
+        self.log_annotation(note);
     }
 
     fn is_raw_capturing(&self) -> bool {
@@ -302,6 +356,11 @@ pub fn parse_raw_capture(path: &Path) -> io::Result<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::collections::VecDeque;
+    use crate::adapter::elm327::Elm327Adapter;
+    use crate::protocol::pid::Pid;
+    use crate::session::Session;
     use crate::transport::mock::MockTransport;
     use tempfile::NamedTempFile;
 
@@ -457,6 +516,39 @@ mod tests {
         assert_eq!(lt.name(), "mock");
     }
 
+    #[tokio::test]
+    async fn test_logging_transport_rename_capture() {
+        let mut mock = MockTransport::new();
+        mock.expect("ATZ", "OK\r>");
+
+        let mut lt = LoggingTransport::new(mock);
+        let dir = tempfile::tempdir().unwrap();
+        let initial = dir.path().join("initial.obd2raw");
+        let renamed = dir.path().join("VIN123.obd2raw");
+
+        lt.start_capture(
+            &initial,
+            &CaptureMetadata {
+                transport_type: "mock".to_string(),
+                port_or_device: "test".to_string(),
+                baud_rate: None,
+            },
+        ).unwrap();
+
+        lt.write(b"ATZ\r").await.unwrap();
+        let _ = lt.read().await.unwrap();
+
+        let new_path = lt.rename_capture(&renamed).unwrap().unwrap();
+        assert_eq!(new_path, renamed);
+        assert!(!initial.exists());
+        assert!(renamed.exists());
+
+        lt.stop_capture().unwrap();
+        let content = std::fs::read_to_string(&renamed).unwrap();
+        assert!(content.contains(" W ATZ\\r"));
+        assert!(content.contains(" R OK\\r>"));
+    }
+
     // ── parse_raw_capture tests ─────────────────────────────────────────
 
     #[test]
@@ -516,5 +608,216 @@ mod tests {
         let pairs = parse_raw_capture(tmp.path()).unwrap();
         assert_eq!(pairs[0].0, "ATE0");
         assert_eq!(pairs[0].1, "ATE0\rOK\r\r>");
+    }
+
+    struct FragmentedTransport {
+        name: &'static str,
+        pending: VecDeque<Vec<Vec<u8>>>,
+        observer: Option<ChunkObserver>,
+    }
+
+    impl FragmentedTransport {
+        fn new(name: &'static str, chunks: Vec<Vec<Vec<u8>>>) -> Self {
+            Self {
+                name,
+                pending: chunks.into(),
+                observer: None,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Transport for FragmentedTransport {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), Obd2Error> {
+            Ok(())
+        }
+
+        async fn read(&mut self) -> Result<Vec<u8>, Obd2Error> {
+            let chunks = self.pending.pop_front().ok_or(Obd2Error::Timeout)?;
+            let mut all = Vec::new();
+            for chunk in chunks {
+                if let Some(observer) = &self.observer {
+                    if let Ok(cb) = observer.lock() {
+                        (cb)(&chunk);
+                    }
+                }
+                all.extend_from_slice(&chunk);
+            }
+            Ok(all)
+        }
+
+        async fn reset(&mut self) -> Result<(), Obd2Error> {
+            Ok(())
+        }
+
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn set_chunk_observer(&mut self, observer: Option<ChunkObserver>) {
+            self.observer = observer;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_logging_transport_records_serial_like_single_chunk_reads() {
+        let transport = FragmentedTransport::new("ttyUSB0", vec![vec![b"41 0C 0A A0\r>".to_vec()]]);
+        let mut lt = LoggingTransport::new(transport);
+        let tmp = NamedTempFile::new().unwrap();
+
+        lt.start_capture(
+            tmp.path(),
+            &CaptureMetadata {
+                transport_type: "serial".into(),
+                port_or_device: "ttyUSB0".into(),
+                baud_rate: Some(115200),
+            },
+        ).unwrap();
+
+        let _ = lt.read().await.unwrap();
+        lt.stop_capture().unwrap();
+
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.contains("R.chunk 41 0C 0A A0\\r>"));
+        assert!(content.contains(" R 41 0C 0A A0\\r>"));
+    }
+
+    #[tokio::test]
+    async fn test_logging_transport_records_ble_like_fragmented_reads() {
+        let transport = FragmentedTransport::new(
+            "OBDLink MX+",
+            vec![vec![b"41 0C ".to_vec(), b"0A A0\r".to_vec(), b">".to_vec()]],
+        );
+        let mut lt = LoggingTransport::new(transport);
+        let tmp = NamedTempFile::new().unwrap();
+
+        lt.start_capture(
+            tmp.path(),
+            &CaptureMetadata {
+                transport_type: "ble".into(),
+                port_or_device: "OBDLink MX+".into(),
+                baud_rate: None,
+            },
+        ).unwrap();
+
+        let response = lt.read().await.unwrap();
+        lt.stop_capture().unwrap();
+
+        assert_eq!(String::from_utf8_lossy(&response), "41 0C 0A A0\r>");
+        let content = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(content.contains("R.chunk 41 0C "));
+        assert!(content.contains("R.chunk 0A A0\\r"));
+        assert!(content.contains("R.chunk >"));
+        assert!(content.contains(" R 41 0C 0A A0\\r>"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_raw_capture_replay_can_session() {
+        let content = "\
+# obd2-raw v1
+# transport=serial port=/dev/ttyUSB0 baud=115200
+# started=2026-04-09T00:00:00.000Z
+0.000 W ATZ\\r
+0.010 R ELM327 v2.1\\r\\r>
+0.020 W STI\\r
+0.030 R ?\\r>
+0.040 W ATE0\\r
+0.050 R OK\\r>
+0.060 W ATL0\\r
+0.070 R OK\\r>
+0.080 W ATH0\\r
+0.090 R OK\\r>
+0.100 W ATS0\\r
+0.110 R OK\\r>
+0.120 W ATAT1\\r
+0.130 R OK\\r>
+0.140 W ATSP0\\r
+0.150 R OK\\r>
+0.160 W 0100\\r
+0.170 R 41 00 BE 3E B8 11\\r>
+0.180 W ATDPN\\r
+0.190 R A6\\r>
+0.200 W ATCAF1\\r
+0.210 R OK\\r>
+0.220 W ATCFC1\\r
+0.230 R OK\\r>
+0.240 W 010C\\r
+0.250 R 41 0C 0A A0\\r>
+";
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), content).unwrap();
+        let pairs = parse_raw_capture(tmp.path()).unwrap();
+
+        let mut transport = MockTransport::new();
+        for (cmd, resp) in pairs {
+            transport.expect(&cmd, &resp);
+        }
+
+        let adapter = Elm327Adapter::new(Box::new(transport));
+        let mut session = Session::new(adapter);
+        let rpm = session.read_pid(Pid::ENGINE_RPM).await.unwrap();
+        assert_eq!(rpm.value.as_f64().unwrap(), 680.0);
+    }
+
+    #[tokio::test]
+    async fn test_parse_raw_capture_replay_j1850_fallback_session() {
+        let content = "\
+# obd2-raw v1
+# transport=ble device=OBDLink MX+
+# started=2026-04-09T00:00:00.000Z
+0.000 W ATZ\\r
+0.010 R ELM327 v2.1\\r\\r>
+0.020 W STI\\r
+0.030 R ?\\r>
+0.040 W ATE0\\r
+0.050 R OK\\r>
+0.060 W ATL0\\r
+0.070 R OK\\r>
+0.080 W ATH0\\r
+0.090 R OK\\r>
+0.100 W ATS0\\r
+0.110 R OK\\r>
+0.120 W ATAT1\\r
+0.130 R OK\\r>
+0.140 W ATSP0\\r
+0.150 R OK\\r>
+0.160 W 0100\\r
+0.170 R NO DATA\\r>
+0.180 W ATTP6\\r
+0.190 R OK\\r>
+0.200 W 0100\\r
+0.210 R NO DATA\\r>
+0.220 W ATTP7\\r
+0.230 R OK\\r>
+0.240 W 0100\\r
+0.250 R NO DATA\\r>
+0.260 W ATTP8\\r
+0.270 R OK\\r>
+0.280 W 0100\\r
+0.290 R NO DATA\\r>
+0.300 W ATTP9\\r
+0.310 R OK\\r>
+0.320 W 0100\\r
+0.330 R NO DATA\\r>
+0.340 W ATTP2\\r
+0.350 R OK\\r>
+0.360 W 0100\\r
+0.370 R 41 00 BE 3E B8 11\\r>
+0.380 W 010C\\r
+0.390 R 41 0C 0A A0\\r>
+";
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), content).unwrap();
+        let pairs = parse_raw_capture(tmp.path()).unwrap();
+
+        let mut transport = MockTransport::new();
+        for (cmd, resp) in pairs {
+            transport.expect(&cmd, &resp);
+        }
+
+        let adapter = Elm327Adapter::new(Box::new(transport));
+        let mut session = Session::new(adapter);
+        let rpm = session.read_pid(Pid::ENGINE_RPM).await.unwrap();
+        assert_eq!(rpm.value.as_f64().unwrap(), 680.0);
     }
 }

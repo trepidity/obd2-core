@@ -39,10 +39,12 @@ impl Default for MockTransport {
 impl Transport for MockTransport {
     async fn write(&mut self, data: &[u8]) -> Result<(), Obd2Error> {
         let cmd = String::from_utf8_lossy(data).trim().to_string();
-        // Find matching expectation
-        for (expected_cmd, response) in &self.expectations {
+        // Find and consume the first matching expectation in sequence.
+        for idx in 0..self.expectations.len() {
+            let (expected_cmd, response) = &self.expectations[idx];
             if cmd == *expected_cmd || cmd.contains(expected_cmd.as_str()) {
                 self.pending_response.push_back(response.clone());
+                self.expectations.remove(idx);
                 return Ok(());
             }
         }

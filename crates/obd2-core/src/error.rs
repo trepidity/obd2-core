@@ -188,5 +188,6 @@ mod tests {
         fn assert_sync<T: Sync>() {}
         // Obd2Error must be Send (required for async)
         assert_send::<Obd2Error>();
+        assert_sync::<Obd2Error>();
     }
 }

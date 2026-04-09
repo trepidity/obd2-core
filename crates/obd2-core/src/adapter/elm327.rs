@@ -4,14 +4,20 @@
 //! and hex string format, parses responses back to raw bytes.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use async_trait::async_trait;
 use tracing::debug;
 use crate::error::Obd2Error;
+use crate::protocol::codec::{self, BusFamily};
 use crate::protocol::pid::Pid;
 use crate::protocol::service::{ServiceRequest, Target};
 use crate::transport::Transport;
-use super::{Adapter, AdapterInfo, Chipset, Capabilities};
-use crate::vehicle::Protocol;
+use super::{
+    Adapter, AdapterEvent, AdapterEventKind, AdapterInfo, Capabilities, Chipset,
+    InitializationReport, PhysicalTarget, ProbeAttempt, ProbeResult,
+    ProtocolSelectionSource, RoutedRequest,
+};
+use crate::vehicle::{KLineInit, PhysicalAddress, Protocol};
 
 /// Default adapter info returned before initialization.
 fn default_adapter_info() -> AdapterInfo {
@@ -29,6 +35,7 @@ pub struct Elm327Adapter {
     info: AdapterInfo,
     initialized: bool,
     current_header: Option<String>,
+    events: Vec<AdapterEvent>,
 }
 
 impl Elm327Adapter {
@@ -39,6 +46,7 @@ impl Elm327Adapter {
             info: default_adapter_info(),
             initialized: false,
             current_header: None,
+            events: Vec::new(),
         }
     }
 
@@ -50,15 +58,148 @@ impl Elm327Adapter {
     /// Send an AT command and read the response.
     async fn send_command(&mut self, cmd: &str) -> Result<String, Obd2Error> {
         debug!(cmd = cmd, "ELM327 send");
-        self.transport.write(format!("{}\r", cmd).as_bytes()).await?;
-        let response_bytes = self.transport.read().await?;
-        let response = String::from_utf8_lossy(&response_bytes).to_string();
+        let response = self.send_command_raw(cmd).await?;
+        self.record_response_events(&response);
+        self.handle_fault_recovery(&response).await?;
         debug!(response = response.trim(), "ELM327 recv");
         Ok(response)
     }
 
+    async fn send_command_raw(&mut self, cmd: &str) -> Result<String, Obd2Error> {
+        self.transport.annotate_raw_capture(&format!("command={cmd}"));
+        let mut framed = String::with_capacity(cmd.len() + 1);
+        framed.push_str(cmd);
+        framed.push('\r');
+        self.transport.write(framed.as_bytes()).await?;
+        let response_bytes = self.transport.read().await?;
+        Ok(self.sanitize_response_bytes(response_bytes))
+    }
+
+    fn push_event(&mut self, kind: AdapterEventKind, detail: impl Into<Option<String>>) {
+        let detail = detail.into();
+        self.transport.annotate_raw_capture(&format!(
+            "adapter_event={kind:?} detail={}",
+            detail.clone().unwrap_or_default()
+        ));
+        self.events.push(AdapterEvent { kind, detail });
+    }
+
+    fn sanitize_response_bytes(&mut self, mut response_bytes: Vec<u8>) -> String {
+        let original_len = response_bytes.len();
+        response_bytes.retain(|&b| b != 0);
+        let null_count = original_len - response_bytes.len();
+        if null_count > 0 {
+            self.push_event(
+                AdapterEventKind::NullBytesFiltered { count: null_count },
+                Some(format!("filtered {null_count} null bytes from adapter response")),
+            );
+        }
+        String::from_utf8_lossy(&response_bytes).into_owned()
+    }
+
+    fn record_response_events(&mut self, response: &str) {
+        let trimmed = response.trim();
+        if trimmed.contains("SEARCHING...") {
+            self.push_event(AdapterEventKind::SearchingDisplayed, None);
+        }
+        if trimmed.contains("BUS BUSY") {
+            self.push_event(AdapterEventKind::BusBusy, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("BUS ERROR") {
+            self.push_event(AdapterEventKind::BusError, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("CAN ERROR") {
+            self.push_event(AdapterEventKind::CanError, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("DATA ERROR") {
+            self.push_event(AdapterEventKind::DataError, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("<RX ERROR") {
+            self.push_event(AdapterEventKind::RxError, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("STOPPED") {
+            self.push_event(AdapterEventKind::Stopped, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("ERR94") {
+            self.push_event(AdapterEventKind::Err94, Some(trimmed.to_string()));
+        }
+        if trimmed.contains("LV RESET") {
+            self.push_event(AdapterEventKind::LowVoltageReset, Some(trimmed.to_string()));
+        }
+        if trimmed == "?" {
+            self.push_event(AdapterEventKind::UnknownCommand, None);
+        }
+    }
+
+    async fn handle_fault_recovery(&mut self, response: &str) -> Result<(), Obd2Error> {
+        let trimmed = response.trim();
+        if trimmed.contains("ERR94") || trimmed.contains("LV RESET") {
+            self.recover_from_adapter_fault().await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_from_adapter_fault(&mut self) -> Result<(), Obd2Error> {
+        self.push_event(
+            AdapterEventKind::RecoveryAction {
+                action: "ATFE".into(),
+            },
+            Some("recovering from fatal adapter fault".into()),
+        );
+        let _ = self.send_command_raw("ATFE").await?;
+        self.current_header = None;
+        self.apply_runtime_defaults().await?;
+        Ok(())
+    }
+
+    async fn apply_runtime_defaults(&mut self) -> Result<(), Obd2Error> {
+        self.send_command_raw("ATE0").await?;
+        self.send_command_raw("ATL0").await?;
+        self.send_command_raw("ATH0").await?;
+        self.send_command_raw("ATS0").await?;
+        self.send_command_raw("ATAT1").await?;
+        self.send_command_raw("ATCAF1").await?;
+        self.send_command_raw("ATCFC1").await?;
+        Ok(())
+    }
+
+    async fn apply_protocol_runtime_policy(&mut self, protocol: Protocol) -> Result<(), Obd2Error> {
+        match protocol {
+            Protocol::Iso9141(_) => {
+                self.send_command_raw("ATSI").await?;
+                self.send_command_raw("ATSW96").await?;
+                self.send_command_raw("ATWM686AF10100").await?;
+            }
+            Protocol::Kwp2000(KLineInit::SlowInit) => {
+                self.send_command_raw("ATSI").await?;
+                self.send_command_raw("ATSW96").await?;
+                self.send_command_raw("ATWMC133F13E").await?;
+            }
+            Protocol::Kwp2000(KLineInit::FastInit) => {
+                self.send_command_raw("ATFI").await?;
+                self.send_command_raw("ATSW96").await?;
+                self.send_command_raw("ATWMC133F13E").await?;
+            }
+            Protocol::Can11Bit500 | Protocol::Can11Bit250 | Protocol::Can29Bit500 | Protocol::Can29Bit250 => {
+                self.send_command_raw("ATCAF1").await?;
+                self.send_command_raw("ATCFC1").await?;
+            }
+            Protocol::J1850Pwm | Protocol::J1850Vpw | Protocol::Auto => {}
+        }
+        Ok(())
+    }
+
+    fn protocol_family(&self) -> BusFamily {
+        match self.info.protocol {
+            Protocol::Can11Bit500 | Protocol::Can11Bit250 | Protocol::Can29Bit500 | Protocol::Can29Bit250 => BusFamily::Can,
+            Protocol::J1850Pwm | Protocol::J1850Vpw => BusFamily::J1850,
+            Protocol::Iso9141(_) => BusFamily::Iso9141,
+            Protocol::Kwp2000(_) => BusFamily::Kwp2000,
+            Protocol::Auto => BusFamily::Can,
+        }
+    }
+
     /// Set the J1850/CAN header for addressing a specific module.
-    #[allow(dead_code)]
     async fn set_header(&mut self, header: &str) -> Result<(), Obd2Error> {
         if self.current_header.as_deref() == Some(header) {
             return Ok(()); // Already set
@@ -68,7 +209,91 @@ impl Elm327Adapter {
             return Err(Obd2Error::Adapter(format!("AT SH failed: {}", response.trim())));
         }
         self.current_header = Some(header.to_string());
+        self.push_event(
+            AdapterEventKind::HeaderChanged {
+                header: header.to_string(),
+            },
+            None,
+        );
         Ok(())
+    }
+
+    async fn apply_target(&mut self, target: &PhysicalTarget) -> Result<(), Obd2Error> {
+        match target {
+            PhysicalTarget::Broadcast => self.clear_targeting().await,
+            PhysicalTarget::Addressed(address) => match address {
+                PhysicalAddress::J1850 { header, .. } => {
+                    self.set_header(&format!("{:02X}{:02X}{:02X}", header[0], header[1], header[2])).await
+                }
+                PhysicalAddress::Can11Bit { request_id, .. } => {
+                    self.set_header(&format!("{:03X}", request_id)).await
+                }
+                PhysicalAddress::Can29Bit { request_id, .. } => {
+                    self.set_header(&format!("{:08X}", request_id)).await
+                }
+                PhysicalAddress::J1939 { .. } => Err(Obd2Error::Adapter(
+                    "J1939 addressed routing is not implemented yet".into(),
+                )),
+            },
+        }
+    }
+
+    async fn clear_targeting(&mut self) -> Result<(), Obd2Error> {
+        if self.current_header.is_none() {
+            return Ok(());
+        }
+        let Some(header) = self.default_broadcast_header() else {
+            self.current_header = None;
+            return Ok(());
+        };
+        self.set_header(&header).await?;
+        self.push_event(
+            AdapterEventKind::HeaderReset {
+                header: header.clone(),
+            },
+            Some("restored broadcast header".into()),
+        );
+        Ok(())
+    }
+
+    fn default_broadcast_header(&self) -> Option<String> {
+        match self.info.protocol {
+            Protocol::J1850Pwm
+            | Protocol::J1850Vpw
+            | Protocol::Iso9141(_)
+            | Protocol::Kwp2000(_) => Some("686AF1".to_string()),
+            Protocol::Can11Bit500 | Protocol::Can11Bit250 => Some("7DF".to_string()),
+            Protocol::Can29Bit500 | Protocol::Can29Bit250 => Some("18DB33F1".to_string()),
+            Protocol::Auto => None,
+        }
+    }
+
+    async fn send_routed_command(
+        &mut self,
+        service_id: u8,
+        data: &[u8],
+        target: &PhysicalTarget,
+    ) -> Result<Vec<u8>, Obd2Error> {
+        self.apply_target(target).await?;
+
+        let mut cmd = String::with_capacity(2 + (data.len() * 2));
+        write!(&mut cmd, "{:02X}", service_id).expect("write to string");
+        for byte in data {
+            write!(&mut cmd, "{:02X}", byte).expect("write to string");
+        }
+
+        let response = self.send_command(&cmd).await?;
+        Self::check_response_error(&response)?;
+
+        let skip = match service_id {
+            0x01 | 0x02 => 2,
+            0x03 | 0x04 | 0x07 | 0x0A => 1,
+            0x09 => 2,
+            0x22 | 0x21 => 3,
+            _ => 1,
+        };
+
+        codec::decode_elm_response_payload(&response, self.protocol_family(), skip)
     }
 
     /// Parse hex response string into raw bytes.
@@ -78,6 +303,7 @@ impl Elm327Adapter {
     /// Handles echo lines gracefully: if the ELM327 echoes the command
     /// (e.g. "010C\r41 0C 0A A0\r>"), the echo line is skipped because
     /// tokens like "010C" exceed u8 range and fail hex-byte parsing.
+    #[cfg(test)]
     fn parse_hex_response(response: &str, skip_bytes: usize) -> Result<Vec<u8>, Obd2Error> {
         let cleaned = response.replace('>', "");
         let mut all_bytes = Vec::new();
@@ -166,6 +392,71 @@ impl Elm327Adapter {
         }
         Ok(())
     }
+
+    fn classify_probe_result(response: &str) -> ProbeResult {
+        let trimmed = response.trim();
+        if trimmed.contains("UNABLE TO CONNECT") {
+            ProbeResult::UnableToConnect
+        } else if trimmed.contains("BUS INIT") && trimmed.contains("ERROR") {
+            ProbeResult::BusInitFailure
+        } else if trimmed.contains("BUS ERROR") || trimmed.contains("BUS BUSY") {
+            ProbeResult::BusError
+        } else if trimmed.contains("CAN ERROR") {
+            ProbeResult::CanError
+        } else if trimmed.contains("NO DATA") {
+            ProbeResult::NoResponse
+        } else if trimmed == "?" {
+            ProbeResult::UnsupportedProtocol
+        } else {
+            ProbeResult::AdapterFault
+        }
+    }
+
+    fn parse_protocol_response(&self, protocol_response: &str) -> Protocol {
+        let proto_char = protocol_response
+            .trim()
+            .replace('>', "")
+            .trim()
+            .chars()
+            .last()
+            .unwrap_or('0');
+        Protocol::from_elm_code(proto_char).unwrap_or(Protocol::Auto)
+    }
+
+    async fn probe_protocol(
+        &mut self,
+        protocol: Protocol,
+        source: ProtocolSelectionSource,
+        command: &str,
+    ) -> Result<ProbeAttempt, Obd2Error> {
+        self.send_command(command).await?;
+        let response = self.send_command("0100").await?;
+        let result = if response.contains("41 00") || response.contains("4100") {
+            ProbeResult::Success
+        } else {
+            Self::classify_probe_result(&response)
+        };
+        Ok(ProbeAttempt {
+            protocol,
+            source,
+            result,
+            detail: Some(response.trim().to_string()),
+        })
+    }
+
+    fn fallback_probe_order() -> &'static [(Protocol, &'static str)] {
+        &[
+            (Protocol::Can11Bit500, "ATTP6"),
+            (Protocol::Can29Bit500, "ATTP7"),
+            (Protocol::Can11Bit250, "ATTP8"),
+            (Protocol::Can29Bit250, "ATTP9"),
+            (Protocol::J1850Vpw, "ATTP2"),
+            (Protocol::J1850Pwm, "ATTP1"),
+            (Protocol::Iso9141(KLineInit::SlowInit), "ATTP3"),
+            (Protocol::Kwp2000(KLineInit::FastInit), "ATTP5"),
+            (Protocol::Kwp2000(KLineInit::SlowInit), "ATTP4"),
+        ]
+    }
 }
 
 impl std::fmt::Debug for Elm327Adapter {
@@ -180,11 +471,16 @@ impl std::fmt::Debug for Elm327Adapter {
 
 #[async_trait]
 impl Adapter for Elm327Adapter {
-    async fn initialize(&mut self) -> Result<AdapterInfo, Obd2Error> {
+    async fn initialize(&mut self) -> Result<InitializationReport, Obd2Error> {
         if self.initialized {
-            return Ok(self.info.clone());
+            return Ok(InitializationReport {
+                info: self.info.clone(),
+                probe_attempts: Vec::new(),
+                events: self.drain_events(),
+            });
         }
 
+        self.push_event(AdapterEventKind::Reset, Some("initializing adapter".into()));
         // Step 1: Reset
         let atz_response = self.send_command("ATZ").await?;
 
@@ -199,80 +495,86 @@ impl Adapter for Elm327Adapter {
             &atz_response,
             sti_response.as_deref(),
         );
+        let mut probe_attempts = Vec::new();
 
         // Step 3-6: Configure
         self.send_command("ATE0").await?;   // Echo off
         self.send_command("ATL0").await?;   // Linefeeds off
         self.send_command("ATH0").await?;   // Headers off (for standard queries)
+        self.send_command("ATS0").await?;   // Spaces off
+        self.send_command("ATAT1").await?;  // Adaptive timing on
         self.send_command("ATSP0").await?;  // Auto-detect protocol
+        self.push_event(AdapterEventKind::ProtocolSearching, Some("ATSP0".into()));
 
         // Step 7: Query supported PIDs to detect protocol
         let response = self.send_command("0100").await?;
         if response.contains("41 00") || response.contains("4100") {
+            probe_attempts.push(ProbeAttempt {
+                protocol: Protocol::Auto,
+                source: ProtocolSelectionSource::AutoDetect,
+                result: ProbeResult::Success,
+                detail: Some(response.trim().to_string()),
+            });
             // Protocol detected successfully
             // Try to detect which protocol was auto-selected
             if let Ok(protocol_response) = self.send_command("ATDPN").await {
-                let proto_char = protocol_response
-                    .trim()
-                    .replace('>', "")
-                    .trim()
-                    .chars()
-                    .last()
-                    .unwrap_or('0');
-                info.protocol = match proto_char {
-                    '1' => Protocol::J1850Pwm,
-                    '2' => Protocol::J1850Vpw,
-                    '3' => Protocol::Iso9141(crate::vehicle::KLineInit::SlowInit),
-                    '4' => Protocol::Kwp2000(crate::vehicle::KLineInit::SlowInit),
-                    '5' => Protocol::Kwp2000(crate::vehicle::KLineInit::FastInit),
-                    '6' => Protocol::Can11Bit500,
-                    '7' => Protocol::Can29Bit500,
-                    '8' => Protocol::Can11Bit250,
-                    '9' => Protocol::Can29Bit250,
-                    _ => Protocol::Auto,
-                };
+                info.protocol = self.parse_protocol_response(&protocol_response);
+            }
+        } else {
+            probe_attempts.push(ProbeAttempt {
+                protocol: Protocol::Auto,
+                source: ProtocolSelectionSource::AutoDetect,
+                result: Self::classify_probe_result(&response),
+                detail: Some(response.trim().to_string()),
+            });
+            for (protocol, command) in Self::fallback_probe_order() {
+                let attempt = self
+                    .probe_protocol(*protocol, ProtocolSelectionSource::ExplicitProbe, command)
+                    .await?;
+                let success = attempt.result == ProbeResult::Success;
+                probe_attempts.push(attempt);
+                if success {
+                    info.protocol = *protocol;
+                    break;
+                }
             }
         }
 
+        if info.protocol == Protocol::Auto {
+            self.push_event(
+                AdapterEventKind::UnsupportedProtocol,
+                Some("no supported protocol could be selected".into()),
+            );
+            return Err(Obd2Error::Adapter("unable to determine active protocol".into()));
+        }
+        self.push_event(AdapterEventKind::ProtocolSelected(info.protocol), None);
         self.info = info.clone();
+        self.apply_protocol_runtime_policy(info.protocol).await?;
+
         self.initialized = true;
-        Ok(info)
+        Ok(InitializationReport {
+            info,
+            probe_attempts,
+            events: self.drain_events(),
+        })
     }
 
     async fn request(&mut self, req: &ServiceRequest) -> Result<Vec<u8>, Obd2Error> {
-        // Handle targeting
         match &req.target {
             Target::Module(module_id) => {
                 debug!(module = %module_id, "targeting specific module");
+                Err(Obd2Error::Adapter(format!(
+                    "logical module target '{module_id}' requires session-side routing resolution"
+                )))
             }
             Target::Broadcast => {
-                // Use default functional addressing
+                self.send_routed_command(req.service_id, &req.data, &PhysicalTarget::Broadcast).await
             }
         }
+    }
 
-        // Build the hex command string
-        let cmd = if req.data.is_empty() {
-            format!("{:02X}", req.service_id)
-        } else {
-            let data_hex: Vec<String> = req.data.iter().map(|b| format!("{:02X}", b)).collect();
-            format!("{:02X}{}", req.service_id, data_hex.join(""))
-        };
-
-        let response = self.send_command(&cmd).await?;
-
-        // Check for errors
-        Self::check_response_error(&response)?;
-
-        // Determine how many echo bytes to skip
-        let skip = match req.service_id {
-            0x01 | 0x02 => 2,  // service echo + PID echo
-            0x03 | 0x04 | 0x07 | 0x0A => 1,  // service echo only
-            0x09 => 2,  // service echo + infotype
-            0x22 | 0x21 => 3,  // service echo + 2-byte DID echo
-            _ => 1,
-        };
-
-        Self::parse_hex_response(&response, skip)
+    async fn routed_request(&mut self, req: &RoutedRequest) -> Result<Vec<u8>, Obd2Error> {
+        self.send_routed_command(req.service_id, &req.data, &req.target).await
     }
 
     async fn supported_pids(&mut self) -> Result<HashSet<Pid>, Obd2Error> {
@@ -286,7 +588,7 @@ impl Adapter for Elm327Adapter {
                     if Self::check_response_error(&response).is_err() {
                         break; // No more supported PIDs
                     }
-                    if let Ok(data) = Self::parse_hex_response(&response, 2) {
+                    if let Ok(data) = codec::decode_elm_response_payload(&response, self.protocol_family(), 2) {
                         if data.len() >= 4 {
                             for pid_code in Self::parse_supported_pids(&data, base) {
                                 all_supported.insert(Pid(pid_code));
@@ -316,6 +618,10 @@ impl Adapter for Elm327Adapter {
         &self.info
     }
 
+    fn drain_events(&mut self) -> Vec<AdapterEvent> {
+        std::mem::take(&mut self.events)
+    }
+
     fn transport_mut(&mut self) -> Option<&mut dyn Transport> {
         Some(&mut *self.transport)
     }
@@ -332,9 +638,13 @@ mod tests {
         transport.expect("ATE0", "OK\r>");
         transport.expect("ATL0", "OK\r>");
         transport.expect("ATH0", "OK\r>");
+        transport.expect("ATS0", "OK\r>");
+        transport.expect("ATAT1", "OK\r>");
         transport.expect("ATSP0", "OK\r>");
         transport.expect("0100", "41 00 BE 3E B8 11\r>");
         transport.expect("ATDPN", "A6\r>"); // CAN 11-bit 500kbps
+        transport.expect("ATCAF1", "OK\r>");
+        transport.expect("ATCFC1", "OK\r>");
     }
 
     #[tokio::test]
@@ -344,7 +654,7 @@ mod tests {
 
         let mut adapter = Elm327Adapter::new(Box::new(transport));
         let info = adapter.initialize().await.unwrap();
-        assert_eq!(info.chipset, Chipset::Elm327Genuine);
+        assert_eq!(info.info.chipset, Chipset::Elm327Genuine);
     }
 
     #[tokio::test]
@@ -438,5 +748,179 @@ mod tests {
     async fn test_elm327_negative_response() {
         let result = Elm327Adapter::check_response_error("7F 22 31\r>");
         assert!(matches!(result, Err(Obd2Error::NegativeResponse { service: 0x22, .. })));
+    }
+
+    #[tokio::test]
+    async fn test_elm327_routed_request_applies_j1850_header() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("AT SH 6C10F1", "OK\r>");
+        transport.expect("22162F", "62 16 2F 80 00\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+
+        let response = adapter.routed_request(&RoutedRequest {
+            service_id: 0x22,
+            data: vec![0x16, 0x2F],
+            target: PhysicalTarget::Addressed(PhysicalAddress::J1850 {
+                node: 0x10,
+                header: [0x6C, 0x10, 0xF1],
+            }),
+        }).await.unwrap();
+
+        assert_eq!(response, vec![0x80, 0x00]);
+    }
+
+    #[tokio::test]
+    async fn test_elm327_routed_request_applies_can11_header() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("AT SH 7E0", "OK\r>");
+        transport.expect("221234", "62 12 34 12 34\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.info.protocol = Protocol::Can11Bit500;
+        adapter.initialized = true;
+
+        let response = adapter.routed_request(&RoutedRequest {
+            service_id: 0x22,
+            data: vec![0x12, 0x34],
+            target: PhysicalTarget::Addressed(PhysicalAddress::Can11Bit {
+                request_id: 0x7E0,
+                response_id: 0x7E8,
+            }),
+        }).await.unwrap();
+
+        assert_eq!(response, vec![0x12, 0x34]);
+    }
+
+    #[tokio::test]
+    async fn test_elm327_broadcast_after_targeted_request_resets_header() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("AT SH 7E0", "OK\r>");
+        transport.expect("221234", "62 12 34 12 34\r>");
+        transport.expect("AT SH 7DF", "OK\r>");
+        transport.expect("010C", "41 0C 0A A0\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+
+        let _ = adapter.routed_request(&RoutedRequest {
+            service_id: 0x22,
+            data: vec![0x12, 0x34],
+            target: PhysicalTarget::Addressed(PhysicalAddress::Can11Bit {
+                request_id: 0x7E0,
+                response_id: 0x7E8,
+            }),
+        }).await.unwrap();
+
+        let response = adapter.request(&ServiceRequest::read_pid(Pid::ENGINE_RPM)).await.unwrap();
+        assert_eq!(response, vec![0x0A, 0xA0]);
+    }
+
+    #[tokio::test]
+    async fn test_elm327_routed_request_reuses_cached_header() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("AT SH 7E0", "OK\r>");
+        transport.expect("221234", "62 12 34 12 34\r>");
+        transport.expect("221235", "62 12 35 56 78\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+
+        let _ = adapter.routed_request(&RoutedRequest {
+            service_id: 0x22,
+            data: vec![0x12, 0x34],
+            target: PhysicalTarget::Addressed(PhysicalAddress::Can11Bit {
+                request_id: 0x7E0,
+                response_id: 0x7E8,
+            }),
+        }).await.unwrap();
+
+        let response = adapter.routed_request(&RoutedRequest {
+            service_id: 0x22,
+            data: vec![0x12, 0x35],
+            target: PhysicalTarget::Addressed(PhysicalAddress::Can11Bit {
+                request_id: 0x7E0,
+                response_id: 0x7E8,
+            }),
+        }).await.unwrap();
+
+        assert_eq!(response, vec![0x56, 0x78]);
+    }
+
+    #[tokio::test]
+    async fn test_elm327_filters_null_bytes_and_records_event() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("010C", "41 0C \0 0A A0\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+        let response = adapter.request(&ServiceRequest::read_pid(Pid::ENGINE_RPM)).await.unwrap();
+        let events = adapter.drain_events();
+
+        assert_eq!(response, vec![0x0A, 0xA0]);
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            AdapterEventKind::NullBytesFiltered { count: 1 }
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_elm327_records_bus_busy_event() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("010C", "BUS BUSY\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+        let result = adapter.request(&ServiceRequest::read_pid(Pid::ENGINE_RPM)).await;
+        let events = adapter.drain_events();
+
+        assert!(result.is_err());
+        assert!(events.iter().any(|event| matches!(event.kind, AdapterEventKind::BusBusy)));
+    }
+
+    #[tokio::test]
+    async fn test_elm327_records_stopped_event() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("010C", "STOPPED\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+        let result = adapter.request(&ServiceRequest::read_pid(Pid::ENGINE_RPM)).await;
+        let events = adapter.drain_events();
+
+        assert!(result.is_err());
+        assert!(events.iter().any(|event| matches!(event.kind, AdapterEventKind::Stopped)));
+    }
+
+    #[tokio::test]
+    async fn test_elm327_recovers_from_lv_reset() {
+        let mut transport = MockTransport::new();
+        setup_init(&mut transport);
+        transport.expect("010C", "LV RESET\r>");
+        transport.expect("ATFE", "OK\r>");
+        transport.expect("ATE0", "OK\r>");
+        transport.expect("ATL0", "OK\r>");
+        transport.expect("ATH0", "OK\r>");
+        transport.expect("ATS0", "OK\r>");
+        transport.expect("ATAT1", "OK\r>");
+        transport.expect("ATCAF1", "OK\r>");
+        transport.expect("ATCFC1", "OK\r>");
+
+        let mut adapter = Elm327Adapter::new(Box::new(transport));
+        adapter.initialize().await.unwrap();
+        let result = adapter.request(&ServiceRequest::read_pid(Pid::ENGINE_RPM)).await;
+        let events = adapter.drain_events();
+
+        assert!(result.is_err());
+        assert!(events.iter().any(|event| matches!(event.kind, AdapterEventKind::LowVoltageReset)));
+        assert!(events.iter().any(|event| matches!(event.kind, AdapterEventKind::RecoveryAction { .. })));
     }
 }

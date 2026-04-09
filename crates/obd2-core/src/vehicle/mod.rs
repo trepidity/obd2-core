@@ -30,7 +30,7 @@ impl ModuleId {
 
 // ── Physical Addressing ──
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[non_exhaustive]
 pub enum PhysicalAddress {
     J1850 { node: u8, header: [u8; 3] },

@@ -1,69 +1,7 @@
-//! Enhanced PID reads, multi-module support, and bus switching.
+//! Enhanced PID spec lookup and formula decoding utilities used by `Session`.
 
-use crate::adapter::Adapter;
-use crate::error::Obd2Error;
-use crate::protocol::enhanced::{EnhancedPid, Reading, ReadingSource, Value};
-use crate::protocol::service::{ServiceRequest, Target};
-use crate::vehicle::{BusConfig, ModuleId, VehicleSpec};
-use std::time::Instant;
-
-/// Read an enhanced PID from a specific module via the adapter.
-pub async fn read_enhanced_pid<A: Adapter>(
-    adapter: &mut A,
-    did: u16,
-    module: &ModuleId,
-    spec: Option<&VehicleSpec>,
-) -> Result<Reading, Obd2Error> {
-    // Look up service ID from spec (default 0x22)
-    let service_id = find_service_id(spec, did, module);
-
-    let req = ServiceRequest::enhanced_read(
-        service_id,
-        did,
-        Target::Module(module.0.clone()),
-    );
-    let data = adapter.request(&req).await?;
-
-    // Try to decode using formula from spec
-    let value = if let Some(epid) = find_enhanced_pid(spec, did, module) {
-        decode_with_formula(epid, &data)
-    } else {
-        Value::Raw(data.clone())
-    };
-
-    Ok(Reading {
-        value,
-        // Reading.unit is &'static str; we cannot produce one from EnhancedPid's String field,
-        // so default to "" until the Reading type is extended.
-        unit: "",
-        timestamp: Instant::now(),
-        raw_bytes: data,
-        source: ReadingSource::Live,
-    })
-}
-
-/// Read all enhanced PIDs defined for a module in the spec.
-pub async fn read_all_enhanced_for_module<A: Adapter>(
-    adapter: &mut A,
-    module: &ModuleId,
-    spec: Option<&VehicleSpec>,
-) -> Result<Vec<(EnhancedPid, Reading)>, Obd2Error> {
-    let pids = list_module_pids(spec, module);
-    let mut results = Vec::new();
-
-    for epid in pids {
-        match read_enhanced_pid(adapter, epid.did, module, spec).await {
-            Ok(reading) => results.push((epid.clone(), reading)),
-            Err(Obd2Error::NoData) => continue, // skip unsupported
-            Err(Obd2Error::NegativeResponse { nrc: crate::error::NegativeResponse::RequestOutOfRange, .. }) => {
-                continue
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(results)
-}
+use crate::protocol::enhanced::{EnhancedPid, Value};
+use crate::vehicle::{ModuleId, VehicleSpec};
 
 /// List enhanced PIDs available for a module from the spec.
 pub fn list_module_pids<'a>(
@@ -89,6 +27,19 @@ fn find_service_id(spec: Option<&VehicleSpec>, did: u16, module: &ModuleId) -> u
 /// Public version of find_service_id for use by Session.
 pub fn find_service_id_from_spec(spec: Option<&VehicleSpec>, did: u16, module: &ModuleId) -> u8 {
     find_service_id(spec, did, module)
+}
+
+pub fn decode_enhanced_value(
+    spec: Option<&VehicleSpec>,
+    did: u16,
+    module: &ModuleId,
+    data: &[u8],
+) -> Value {
+    if let Some(epid) = find_enhanced_pid(spec, did, module) {
+        decode_with_formula(epid, data)
+    } else {
+        Value::Raw(data.to_vec())
+    }
 }
 
 /// Find an EnhancedPid definition in the spec by DID and module.
@@ -152,28 +103,10 @@ fn decode_with_formula(epid: &EnhancedPid, data: &[u8]) -> Value {
     }
 }
 
-/// Get available buses from the spec.
-pub fn available_buses(spec: Option<&VehicleSpec>) -> Vec<&BusConfig> {
-    spec.map(|s| s.communication.buses.iter().collect())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::mock::MockAdapter;
     use crate::protocol::enhanced::Formula;
-
-    #[tokio::test]
-    async fn test_read_enhanced_default_service_id() {
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-        let module = ModuleId::new("ecm");
-        let reading = read_enhanced_pid(&mut adapter, 0x162F, &module, None)
-            .await
-            .unwrap();
-        assert!(matches!(reading.value, Value::Raw(_)));
-    }
 
     #[test]
     fn test_decode_linear_formula() {
@@ -268,12 +201,6 @@ mod tests {
             Value::State(s) => assert_eq!(s, "2nd"),
             _ => panic!("expected State"),
         }
-    }
-
-    #[test]
-    fn test_available_buses_no_spec() {
-        let buses = available_buses(None);
-        assert!(buses.is_empty());
     }
 
     fn make_test_spec_with_enhanced_pids() -> VehicleSpec {
@@ -425,30 +352,13 @@ mod tests {
         assert_eq!(sid, 0x22);
     }
 
-    #[tokio::test]
-    async fn test_read_enhanced_with_spec_decodes_formula() {
+    #[test]
+    fn test_decode_enhanced_value_uses_formula() {
         let spec = make_test_spec_with_enhanced_pids();
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
         let module = ModuleId::new("ecm");
-        // MockAdapter returns [0x80, 0x00] for Mode 22
-        // Balance Rate: (0x8000 - 32768) / 64 = 0.0
-        let reading = read_enhanced_pid(&mut adapter, 0x162F, &module, Some(&spec))
-            .await
-            .unwrap();
-        assert!(matches!(reading.value, Value::Scalar(_)));
-        assert!((reading.value.as_f64().unwrap()).abs() < 0.01);
+        let value = decode_enhanced_value(Some(&spec), 0x162F, &module, &[0x80, 0x00]);
+        assert!(matches!(value, Value::Scalar(_)));
+        assert!((value.as_f64().unwrap()).abs() < 0.01);
     }
 
-    #[tokio::test]
-    async fn test_read_all_enhanced_for_module() {
-        let spec = make_test_spec_with_enhanced_pids();
-        let mut adapter = MockAdapter::new();
-        adapter.initialize().await.unwrap();
-        let module = ModuleId::new("ecm");
-        let results = read_all_enhanced_for_module(&mut adapter, &module, Some(&spec))
-            .await
-            .unwrap();
-        assert_eq!(results.len(), 2, "ECM has 2 enhanced PIDs in test spec");
-    }
 }

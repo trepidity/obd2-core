@@ -7,7 +7,7 @@ use crate::protocol::pid::Pid;
 use crate::protocol::dtc::Dtc;
 use crate::protocol::service::ServiceRequest;
 use crate::vehicle::Protocol;
-use super::{Adapter, AdapterInfo, Chipset, Capabilities};
+use super::{Adapter, AdapterInfo, Capabilities, Chipset, InitializationReport, RoutedRequest};
 
 /// A mock adapter that simulates a vehicle for testing.
 ///
@@ -51,10 +51,16 @@ impl MockAdapter {
                 capabilities: Capabilities {
                     can_clear_dtcs: true,
                     dual_can: false,
-                    enhanced_diag: true,
-                    battery_voltage: true,
-                    adaptive_timing: true,
-                },
+                enhanced_diag: true,
+                battery_voltage: true,
+                adaptive_timing: true,
+                kline_init: true,
+                kline_wakeup: true,
+                can_filtering: true,
+                can_flow_control: true,
+                can_extended_addressing: true,
+                can_silent_mode: true,
+            },
             },
             vin: vin.to_string(),
             dtcs: Vec::new(),
@@ -172,9 +178,13 @@ impl Default for MockAdapter {
 
 #[async_trait]
 impl Adapter for MockAdapter {
-    async fn initialize(&mut self) -> Result<AdapterInfo, Obd2Error> {
+    async fn initialize(&mut self) -> Result<InitializationReport, Obd2Error> {
         self.initialized = true;
-        Ok(self.info.clone())
+        Ok(InitializationReport {
+            info: self.info.clone(),
+            probe_attempts: Vec::new(),
+            events: Vec::new(),
+        })
     }
 
     async fn request(&mut self, req: &ServiceRequest) -> Result<Vec<u8>, Obd2Error> {
@@ -279,6 +289,14 @@ impl Adapter for MockAdapter {
         }
     }
 
+    async fn routed_request(&mut self, req: &RoutedRequest) -> Result<Vec<u8>, Obd2Error> {
+        self.request(&ServiceRequest {
+            service_id: req.service_id,
+            data: req.data.clone(),
+            target: crate::protocol::service::Target::Broadcast,
+        }).await
+    }
+
     async fn supported_pids(&mut self) -> Result<HashSet<Pid>, Obd2Error> {
         Ok(self.supported.clone())
     }
@@ -300,7 +318,7 @@ mod tests {
     async fn test_mock_adapter_initialize() {
         let mut adapter = MockAdapter::new();
         let info = adapter.initialize().await.unwrap();
-        assert_eq!(info.chipset, Chipset::Elm327Genuine);
+        assert_eq!(info.info.chipset, Chipset::Elm327Genuine);
     }
 
     #[tokio::test]
