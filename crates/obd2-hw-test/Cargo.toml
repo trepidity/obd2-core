@@ -1,0 +1,17 @@
+[package]
+name = "obd2-hw-test"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Hardware parity test harness for obd2-core"
+
+[dependencies]
+obd2-core = { path = "../obd2-core", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+colored = "2"

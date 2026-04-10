@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/obd2-core",
     "crates/obd2-store-sqlite",
+    "crates/obd2-hw-test",
 ]
 
 [workspace.package]

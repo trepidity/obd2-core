@@ -171,7 +171,7 @@ The library must model adapter and communication lifecycle explicitly enough to 
 - [x] Session methods call initialization automatically when needed.
 - [x] Initialization is idempotent at the session and adapter level.
 - [x] Adapter events update session connection state.
-- [~] The lifecycle enum exists, but the distinction set is not yet as rich as the full target model described below.
+- [x] The lifecycle enum now covers the supported runtime states, including ignition-off.
 
 ### Target Lifecycle States
 
@@ -181,14 +181,14 @@ The library must model adapter and communication lifecycle explicitly enough to 
 - [x] Connected
 - [x] Unsupported protocol
 - [x] Disconnected/error
-- [ ] Ignition-off as a distinct, verified runtime state
+- [x] Ignition-off as a distinct, verified runtime state
 
 ### Acceptance Checklist
 
 - [x] Calling a high-level session method without explicit `initialize()` succeeds when possible.
 - [x] Session state changes are observable.
 - [x] Initialization outcomes are visible in discovery and raw capture.
-- [ ] Ignition-off state is validated and exercised with adapter-specific behavior.
+- [x] Ignition-off state is validated and exercised with adapter-specific behavior.
 
 ## Area 3: Discovery Profile
 
@@ -651,15 +651,32 @@ The library must support safe, session-owned polling without violating adapter s
 - [x] Threshold evaluation is integrated into polling.
 - [x] Battery voltage can be included in polling.
 - [x] Non-fatal poll errors are surfaced as events.
+- [x] A mock-backed repeated-PID regression harness exists.
 
 ### Known Limitations
 
-- [ ] A dedicated performance/regression harness for repeated PID polling is still open.
+- [~] The harness is mock-backed; physical-hardware timing parity is still covered separately.
 
 ### Acceptance Checklist
 
 - [x] Polling does not bypass session-owned routing/lifecycle behavior.
-- [ ] Polling performance regression harness exists.
+- [x] Polling performance regression harness exists.
+
+### Regression Harness
+
+Run the harness with:
+
+```bash
+cargo test -p obd2-core repeated_pid_polling_harness -- --nocapture
+```
+
+You can override the number of timed cycles with:
+
+```bash
+OBD2_CORE_POLLING_HARNESS_ITERS=1000 cargo test -p obd2-core repeated_pid_polling_harness -- --nocapture
+```
+
+It protects against accidental slowdowns in the session-owned poll path, especially added sleeps, excessive allocation, or regression in `execute_poll_cycle()` behavior when repeated across many PIDs.
 
 ## Area 17: Single-Flight Safety
 
@@ -742,12 +759,13 @@ The project must have enough test coverage to prevent regressions across protoco
 - [x] Business-rule tests exist.
 - [x] Replay tests exist.
 - [x] Transport fragmentation tests exist.
-- [~] Real hardware parity is still primarily simulated rather than exercised against physical devices in CI.
+- [x] A dedicated manual hardware parity harness now exists at `crates/obd2-hw-test`.
+- [~] Real hardware parity is no longer purely design-only, but it is still not exercised as a stable physical USB/BLE matrix in CI.
 
 ### Explicit Gaps
 
-- [ ] Real USB vs BLE parity testing on physical hardware
-- [ ] Real multi-vehicle hardware regression matrix
+- [ ] First committed USB vs BLE parity corpus from physical hardware
+- [ ] Real multi-vehicle hardware regression matrix exercised on repeatable hardware
 - [ ] Automated capture corpus from production hardware families beyond current representative fixtures
 
 ### Acceptance Checklist
@@ -815,13 +833,34 @@ The project must provide a stable storage abstraction for persisting vehicle/ses
 
 J1939 must become a first-class, fully designed architecture before it can be considered part of the supported production surface.
 
+### Locked Scope
+
+The supported first-pass J1939 contract is explicitly limited to:
+
+- `Session`-owned access
+- broadcast PGN reads
+- directed PGN reads
+- monitor-flow reads
+- DM1 reads
+- transport-protocol reassembly for requested PGNs
+- typed decode helpers for the core fleet PGNs
+
+The initial core fleet PGNs are:
+
+- `EEC1`
+- `CCVS`
+- `ET1`
+- `EFL/P1`
+- `LFE`
+
 ### Required Behavior
 
 - J1939 session-first public API
 - J1939 discovery/profile representation
 - J1939 physical routing model
 - J1939 adapter initialization policy
-- JE/JS byte-order policy
+- J1939 timeout policy
+- J1939 byte-order policy
 - request and monitor flows
 - DM1 support
 - transport-protocol reassembly
@@ -830,15 +869,28 @@ J1939 must become a first-class, fully designed architecture before it can be co
 
 ### Current Status
 
-- [~] J1939 data types and helper APIs exist.
-- [ ] J1939 is not complete on the supported integration surface.
+- [x] The J1939 support boundary is explicitly defined.
+- [x] The session-first J1939 API proposal is documented.
+- [x] The discovery/profile representation contract is documented.
+- [x] The routing model contract is documented.
+- [x] The timeout and byte-order policy contract is documented.
+- [x] J1939 data types and PGN decoder helpers exist (EEC1, CCVS, ET1, EFLP1, LFE, DM1).
+- [x] Session-first J1939 read path exists (`read_j1939_pgn`, `read_j1939_dtcs`).
+- [x] J1939 PGN reads are tested through session integration tests.
+- [~] J1939 is not complete on the supported integration surface.
 - [ ] J1939 addressed routing is not implemented.
-- [ ] J1939 codec/reassembly is not complete.
-- [ ] J1939 remains a separate workstream.
+- [ ] J1939 transport-protocol reassembly is not complete.
+- [ ] J1939 discovery integration is not complete.
+- [ ] J1939 remains a separate implementation workstream.
 
 ### Acceptance Checklist
 
-- [ ] J1939 must not be represented as production-complete until the above is finished.
+- [x] J1939 must not be represented as production-complete until the implementation work is finished.
+- [x] The supported first-pass J1939 scope is explicit in the requirements doc.
+- [x] The session-first API proposal is explicit in the requirements doc.
+- [x] The discovery/profile model is explicit in the requirements doc.
+- [x] The routing model is explicit in the requirements doc.
+- [x] The timeout and byte-order policy are explicit in the requirements doc.
 
 ## Release-Readiness Summary
 
@@ -853,11 +905,12 @@ J1939 must become a first-class, fully designed architecture before it can be co
 
 ### Still Open Before Claiming “Complete”
 
-- [ ] Full ignition-off/state richness validation
-- [ ] Polling performance regression harness
+- [x] Full ignition-off/state richness validation
+- [x] Polling performance regression harness
+- [~] Hardware parity harness implementation
 - [ ] Real hardware parity matrix for USB and BLE adapters
 - [ ] Broader capture corpus from representative real vehicles/adapters
-- [ ] J1939 completion
+- [ ] J1939 completion (addressed routing, transport-protocol reassembly, discovery integration)
 
 ## Master Feature Tracking Checklist
 
@@ -883,11 +936,12 @@ J1939 must become a first-class, fully designed architecture before it can be co
 
 ### Remaining
 
-- [ ] Ignition-off lifecycle verification
-- [ ] Polling perf/regression harness
-- [ ] Expanded real-hardware regression coverage
+- [x] Ignition-off lifecycle verification
+- [x] Polling performance regression harness
+- [x] J1939 session-first read path (broadcast PGN reads, DM1, typed decoders)
+- [~] Expanded real-hardware regression coverage
 - [ ] Expanded real capture corpus
-- [ ] J1939 first-class support
+- [ ] J1939 full support (addressed routing, transport-protocol, discovery integration)
 
 ### Roadmap
 

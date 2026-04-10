@@ -328,6 +328,38 @@ Run the test suite:
 cargo test --workspace
 ```
 
+### Hardware Parity Harness
+
+The repository now includes a manual hardware parity harness at
+`crates/obd2-hw-test` for USB vs BLE comparison on real adapters.
+
+List known vehicles:
+
+```bash
+cargo run -p obd2-hw-test -- vehicles
+```
+
+Run a matrix against real hardware:
+
+```bash
+cargo run -p obd2-hw-test -- run \
+  --transport usb \
+  --port /dev/ttyUSB0 \
+  --vehicle duramax-2006 \
+  --output results/duramax-2006-usb.json
+```
+
+Compare two reports:
+
+```bash
+cargo run -p obd2-hw-test -- compare \
+  results/duramax-2006-usb.json \
+  results/duramax-2006-ble.json
+```
+
+The harness is implemented, but the first committed real-hardware corpus and
+self-hosted CI automation are still follow-on work.
+
 ## Requirements
 
 - Rust 1.75+
